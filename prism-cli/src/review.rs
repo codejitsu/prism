@@ -1,6 +1,7 @@
 use anyhow::{Result, bail};
 
 use crate::ai::{AiReviewResult, ReviewContext, ReviewFileContext, analyze_review_context};
+use crate::config::Config;
 use crate::github::client::GitHubClient;
 use crate::github::repo;
 use crate::github::types::{CommitFile, PullRequestFile};
@@ -171,9 +172,16 @@ pub async fn review(
     force_pr: bool,
     enable_ai: bool,
     model_override: Option<&str>,
+    config: &Config,
 ) -> Result<()> {
     let review_target = ReviewTarget::parse(target, force_commit, force_pr)?;
-    let client = GitHubClient::new()?;
+
+    let github_token = config.github_token().ok_or_else(|| {
+        anyhow::anyhow!(
+            "GitHub token is required. Set GITHUB_TOKEN environment variable or add it to ~/.config/prism/config.toml"
+        )
+    })?;
+    let client = GitHubClient::new(github_token)?;
 
     match review_target {
         ReviewTarget::PullRequest { pr_number } => {
@@ -185,6 +193,7 @@ pub async fn review(
                 pr_number,
                 enable_ai,
                 model_override,
+                config,
             )
             .await
         }
@@ -193,7 +202,16 @@ pub async fn review(
             repo,
             pr_number,
         } => {
-            review_pull_request(&client, &owner, &repo, pr_number, enable_ai, model_override).await
+            review_pull_request(
+                &client,
+                &owner,
+                &repo,
+                pr_number,
+                enable_ai,
+                model_override,
+                config,
+            )
+            .await
         }
         ReviewTarget::Commit { hash } => {
             let repo_info = repo::detect_repo()?;
@@ -204,6 +222,7 @@ pub async fn review(
                 &hash,
                 enable_ai,
                 model_override,
+                config,
             )
             .await
         }
@@ -218,6 +237,7 @@ async fn review_pull_request(
     pr_number: u64,
     enable_ai: bool,
     model_override: Option<&str>,
+    config: &Config,
 ) -> Result<()> {
     log::info!("Fetching PR #{} from {}/{}...", pr_number, owner, repo);
 
@@ -272,7 +292,14 @@ async fn review_pull_request(
             &files,
             pr_number,
         );
-        match analyze_review_context(&context, model_override).await {
+        match analyze_review_context(
+            &context,
+            model_override,
+            config.default_model(),
+            config.openai_api_key().as_deref(),
+        )
+        .await
+        {
             Ok(result) => print_ai_sections(&result),
             Err(err) => {
                 println!();
@@ -292,6 +319,7 @@ async fn review_commit(
     sha: &str,
     enable_ai: bool,
     model_override: Option<&str>,
+    config: &Config,
 ) -> Result<()> {
     log::info!("Fetching commit {} from {}/{}...", sha, owner, repo);
 
@@ -346,7 +374,14 @@ async fn review_commit(
             &commit.files,
             &commit.sha,
         );
-        match analyze_review_context(&context, model_override).await {
+        match analyze_review_context(
+            &context,
+            model_override,
+            config.default_model(),
+            config.openai_api_key().as_deref(),
+        )
+        .await
+        {
             Ok(result) => print_ai_sections(&result),
             Err(err) => {
                 println!();

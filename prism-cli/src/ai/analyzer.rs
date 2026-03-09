@@ -2,7 +2,7 @@ use std::env;
 use std::fmt::Write;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use rig::client::{CompletionClient, ProviderClient};
 use rig::completion::TypedPrompt;
 use rig::providers::openai;
@@ -10,21 +10,42 @@ use rig::providers::openai;
 use super::prompts::{SYSTEM_PROMPT, prod_readiness_prompt, regressions_prompt, summary_prompt};
 use super::types::{AiReviewResult, ProdReadinessReport, RegressionReport, ReviewContext, Summary};
 
-const DEFAULT_MODEL: &str = "gpt-4o";
 const MAX_CONTEXT_CHARS: usize = 20_000;
 const MAX_FILE_PATCH_CHARS: usize = 2_500;
 const ANALYSIS_TIMEOUT_SECS: u64 = 45;
 
+/// Run AI analysis on the given review context.
+///
+/// - `model_override`: CLI `--model` flag value (highest priority)
+/// - `config_model`: Model from config file (fallback)
+/// - `api_key`: OpenAI API key resolved from env or config
 pub async fn analyze_review_context(
     context: &ReviewContext,
     model_override: Option<&str>,
+    config_model: &str,
+    api_key: Option<&str>,
 ) -> Result<AiReviewResult> {
-    ensure_openai_api_key()?;
+    // Ensure API key is available
+    let api_key = api_key
+        .filter(|key| !key.trim().is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "OpenAI API key is required when using --ai. \
+                 Set OPENAI_API_KEY environment variable or add it to ~/.config/prism/config.toml"
+            )
+        })?;
+
+    // Set env var for rig's from_env() to pick up
+    // SAFETY: We are setting this before spawning any threads that might read it,
+    // and we only set it once at the start of AI analysis.
+    unsafe {
+        env::set_var("OPENAI_API_KEY", api_key);
+    }
 
     let model = model_override
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or(DEFAULT_MODEL);
+        .unwrap_or(config_model);
 
     let openai_client = openai::Client::from_env();
     let agent = openai_client
@@ -69,13 +90,6 @@ pub async fn analyze_review_context(
         regressions,
         prod_readiness,
     })
-}
-
-fn ensure_openai_api_key() -> Result<()> {
-    match env::var("OPENAI_API_KEY") {
-        Ok(value) if !value.trim().is_empty() => Ok(()),
-        _ => bail!("OPENAI_API_KEY is required when using --ai. Export it before running prism."),
-    }
 }
 
 fn render_context(context: &ReviewContext) -> String {

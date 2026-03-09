@@ -3,6 +3,7 @@ use std::process;
 use clap::{Parser, Subcommand};
 
 mod ai;
+mod config;
 mod github;
 mod review;
 
@@ -37,6 +38,9 @@ enum Command {
         #[arg(long, requires = "ai")]
         model: Option<String>,
     },
+
+    /// Initialize configuration file at ~/.config/prism/config.toml
+    Init,
 }
 
 #[tokio::main]
@@ -52,11 +56,30 @@ async fn main() {
             ai,
             model,
         }) => {
-            if let Err(e) = review::review(&target, commit, pr, ai, model.as_deref()).await {
+            let cfg = match config::Config::load() {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    log::error!("Failed to load config: {:#}", e);
+                    process::exit(1);
+                }
+            };
+
+            if let Err(e) = review::review(&target, commit, pr, ai, model.as_deref(), &cfg).await {
                 log::error!("{:#}", e);
                 process::exit(1);
             }
         }
+        Some(Command::Init) => match config::init_config() {
+            Ok(path) => {
+                println!("Created config file at {}", path.display());
+                println!();
+                println!("Edit this file to add your GitHub token and OpenAI API key.");
+            }
+            Err(e) => {
+                log::error!("{:#}", e);
+                process::exit(1);
+            }
+        },
         None => {
             log::warn!("No command provided. Run 'prism --help' for usage.");
         }
