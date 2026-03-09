@@ -61,11 +61,13 @@ fn parse_github_remote(url: &str) -> Result<RepoInfo> {
 }
 
 /// Extract owner and repo from a path like `owner/repo.git` or `owner/repo`.
+///
+/// Rejects paths with extra segments beyond `owner/repo`.
 fn parse_owner_repo_path(path: &str) -> Result<RepoInfo> {
     let path = path.strip_suffix(".git").unwrap_or(path);
-    let parts: Vec<&str> = path.splitn(3, '/').collect();
+    let parts: Vec<&str> = path.split('/').collect();
 
-    if parts.len() < 2 || parts[0].is_empty() || parts[1].is_empty() {
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
         bail!("Could not parse owner/repo from path: '{}'", path);
     }
 
@@ -149,5 +151,12 @@ mod tests {
                 repo: "hello-world".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn test_parse_url_with_extra_path_segments_fails() {
+        let result =
+            parse_github_remote("https://github.com/octocat/hello-world/extra/segments.git");
+        assert!(result.is_err());
     }
 }

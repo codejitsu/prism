@@ -19,6 +19,14 @@ enum Command {
         /// PR number, GitHub PR URL, or commit SHA to review
         #[arg(value_name = "target")]
         target: String,
+
+        /// Force interpretation as a commit SHA (disambiguates all-digit hashes)
+        #[arg(long, short = 'c', conflicts_with = "pr")]
+        commit: bool,
+
+        /// Force interpretation as a PR number
+        #[arg(long, short = 'p', conflicts_with = "commit")]
+        pr: bool,
     },
 }
 
@@ -28,8 +36,8 @@ async fn main() {
     let args = Args::parse();
 
     match args.command {
-        Some(Command::Review { target }) => {
-            if let Err(e) = review::review(&target).await {
+        Some(Command::Review { target, commit, pr }) => {
+            if let Err(e) = review::review(&target, commit, pr).await {
                 log::error!("{:#}", e);
                 process::exit(1);
             }

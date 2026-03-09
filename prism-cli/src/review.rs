@@ -22,13 +22,27 @@ pub enum ReviewTarget {
 impl ReviewTarget {
     /// Parse a user-supplied string into a `ReviewTarget`.
     ///
-    /// Detection order:
+    /// When `force_commit` is true, the input is interpreted as a commit SHA
+    /// regardless of whether it looks like a number. When `force_pr` is true,
+    /// the input is interpreted as a PR number. When neither flag is set, the
+    /// auto-detection order applies:
+    ///
     /// 1. URL (starts with `http://` or `https://`) -- must be a GitHub PR URL.
     /// 2. PR number -- parses as `u64` and is >= 1.
     /// 3. Commit hash -- 7-40 hex characters.
     /// 4. Otherwise -- error.
-    pub fn parse(input: &str) -> Result<Self> {
+    pub fn parse(input: &str, force_commit: bool, force_pr: bool) -> Result<Self> {
         let input = input.trim();
+
+        // Forced commit interpretation
+        if force_commit {
+            return Self::parse_as_commit(input);
+        }
+
+        // Forced PR interpretation
+        if force_pr {
+            return Self::parse_as_pr_number(input);
+        }
 
         // 1. URL
         if input.starts_with("http://") || input.starts_with("https://") {
@@ -58,6 +72,34 @@ impl ReviewTarget {
                - A commit SHA (e.g. a1b2c3d)",
             input
         );
+    }
+
+    /// Parse the input as a commit SHA, validating it is 7-40 hex characters.
+    fn parse_as_commit(input: &str) -> Result<Self> {
+        if input.len() >= 7 && input.len() <= 40 && input.chars().all(|c| c.is_ascii_hexdigit()) {
+            Ok(ReviewTarget::Commit {
+                hash: input.to_string(),
+            })
+        } else {
+            bail!(
+                "Invalid commit SHA: '{}'. Expected 7-40 hexadecimal characters.",
+                input
+            )
+        }
+    }
+
+    /// Parse the input as a PR number, validating it is a positive integer.
+    fn parse_as_pr_number(input: &str) -> Result<Self> {
+        let n: u64 = input.parse().map_err(|_| {
+            anyhow::anyhow!(
+                "Invalid PR number: '{}'. Expected a positive integer.",
+                input
+            )
+        })?;
+        if n == 0 {
+            bail!("Invalid PR number: 0. PR numbers start at 1.");
+        }
+        Ok(ReviewTarget::PullRequest { pr_number: n })
     }
 
     /// Parse a GitHub PR URL like `https://github.com/owner/repo/pull/42`.
@@ -94,10 +136,14 @@ impl ReviewTarget {
             );
         }
 
-        let pr_number: u64 = parts[3].parse().map_err(|_| {
+        // Strip query string or fragment from the PR number segment
+        // (e.g. "42?foo=bar" -> "42", "42#discussion" -> "42").
+        let pr_segment = parts[3].split(&['?', '#'][..]).next().unwrap_or(parts[3]);
+
+        let pr_number: u64 = pr_segment.parse().map_err(|_| {
             anyhow::anyhow!(
                 "Invalid PR number in URL: '{}'. Expected a positive integer.",
-                parts[3]
+                pr_segment
             )
         })?;
 
@@ -114,8 +160,12 @@ impl ReviewTarget {
 }
 
 /// Run the review for the given target string.
-pub async fn review(target: &str) -> Result<()> {
-    let review_target = ReviewTarget::parse(target)?;
+///
+/// `force_commit` and `force_pr` correspond to the `--commit` / `--pr` CLI
+/// flags and are used to disambiguate inputs that could be either a PR number
+/// or a commit SHA (e.g. all-digit hex strings like "1234567").
+pub async fn review(target: &str, force_commit: bool, force_pr: bool) -> Result<()> {
+    let review_target = ReviewTarget::parse(target, force_commit, force_pr)?;
     let client = GitHubClient::new()?;
 
     match review_target {
@@ -277,23 +327,23 @@ fn status_to_char(status: &str) -> char {
 mod tests {
     use super::*;
 
-    // --- ReviewTarget::parse tests ---
+    // --- ReviewTarget::parse tests (auto-detect, no flags) ---
 
     #[test]
     fn test_parse_pr_number() {
-        let target = ReviewTarget::parse("42").unwrap();
+        let target = ReviewTarget::parse("42", false, false).unwrap();
         assert_eq!(target, ReviewTarget::PullRequest { pr_number: 42 });
     }
 
     #[test]
     fn test_parse_pr_number_one() {
-        let target = ReviewTarget::parse("1").unwrap();
+        let target = ReviewTarget::parse("1", false, false).unwrap();
         assert_eq!(target, ReviewTarget::PullRequest { pr_number: 1 });
     }
 
     #[test]
     fn test_parse_pr_number_zero_fails() {
-        let result = ReviewTarget::parse("0");
+        let result = ReviewTarget::parse("0", false, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -305,7 +355,12 @@ mod tests {
 
     #[test]
     fn test_parse_github_pr_url() {
-        let target = ReviewTarget::parse("https://github.com/octocat/hello-world/pull/99").unwrap();
+        let target = ReviewTarget::parse(
+            "https://github.com/octocat/hello-world/pull/99",
+            false,
+            false,
+        )
+        .unwrap();
         assert_eq!(
             target,
             ReviewTarget::PullRequestUrl {
@@ -318,7 +373,11 @@ mod tests {
 
     #[test]
     fn test_parse_github_pr_url_with_zero_fails() {
-        let result = ReviewTarget::parse("https://github.com/octocat/hello-world/pull/0");
+        let result = ReviewTarget::parse(
+            "https://github.com/octocat/hello-world/pull/0",
+            false,
+            false,
+        );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -330,7 +389,11 @@ mod tests {
 
     #[test]
     fn test_parse_github_issue_url_fails() {
-        let result = ReviewTarget::parse("https://github.com/octocat/hello-world/issues/10");
+        let result = ReviewTarget::parse(
+            "https://github.com/octocat/hello-world/issues/10",
+            false,
+            false,
+        );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -342,13 +405,13 @@ mod tests {
 
     #[test]
     fn test_parse_non_github_url_fails() {
-        let result = ReviewTarget::parse("https://gitlab.com/foo/bar/pull/1");
+        let result = ReviewTarget::parse("https://gitlab.com/foo/bar/pull/1", false, false);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_parse_url_empty_owner_fails() {
-        let result = ReviewTarget::parse("https://github.com//repo/pull/1");
+        let result = ReviewTarget::parse("https://github.com//repo/pull/1", false, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -360,7 +423,7 @@ mod tests {
 
     #[test]
     fn test_parse_url_empty_repo_fails() {
-        let result = ReviewTarget::parse("https://github.com/owner//pull/1");
+        let result = ReviewTarget::parse("https://github.com/owner//pull/1", false, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -371,8 +434,62 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_url_with_query_string() {
+        let target = ReviewTarget::parse(
+            "https://github.com/octocat/hello-world/pull/42?diff=split",
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            target,
+            ReviewTarget::PullRequestUrl {
+                owner: "octocat".to_string(),
+                repo: "hello-world".to_string(),
+                pr_number: 42,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_url_with_fragment() {
+        let target = ReviewTarget::parse(
+            "https://github.com/octocat/hello-world/pull/42#discussion_r123",
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            target,
+            ReviewTarget::PullRequestUrl {
+                owner: "octocat".to_string(),
+                repo: "hello-world".to_string(),
+                pr_number: 42,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_url_with_query_and_fragment() {
+        let target = ReviewTarget::parse(
+            "https://github.com/octocat/hello-world/pull/42?diff=split#discussion_r123",
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            target,
+            ReviewTarget::PullRequestUrl {
+                owner: "octocat".to_string(),
+                repo: "hello-world".to_string(),
+                pr_number: 42,
+            }
+        );
+    }
+
+    #[test]
     fn test_parse_short_commit_hash() {
-        let target = ReviewTarget::parse("a1b2c3d").unwrap();
+        let target = ReviewTarget::parse("a1b2c3d", false, false).unwrap();
         assert_eq!(
             target,
             ReviewTarget::Commit {
@@ -384,7 +501,7 @@ mod tests {
     #[test]
     fn test_parse_full_commit_hash() {
         let hash = "abc123ef01234567890abcdef01234567890abcd";
-        let target = ReviewTarget::parse(hash).unwrap();
+        let target = ReviewTarget::parse(hash, false, false).unwrap();
         assert_eq!(
             target,
             ReviewTarget::Commit {
@@ -396,20 +513,101 @@ mod tests {
     #[test]
     fn test_parse_too_short_hex_fails() {
         // 6 hex chars -- too short for a commit hash, and not a valid u64 PR number
-        let result = ReviewTarget::parse("abcdef");
+        let result = ReviewTarget::parse("abcdef", false, false);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_parse_non_hex_string_fails() {
-        let result = ReviewTarget::parse("not-valid");
+        let result = ReviewTarget::parse("not-valid", false, false);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_parse_empty_string_fails() {
-        let result = ReviewTarget::parse("");
+        let result = ReviewTarget::parse("", false, false);
         assert!(result.is_err());
+    }
+
+    // --- Forced --commit flag tests ---
+
+    #[test]
+    fn test_parse_forced_commit_all_digits() {
+        // All-digit string that would normally be a PR number
+        let target = ReviewTarget::parse("1234567", true, false).unwrap();
+        assert_eq!(
+            target,
+            ReviewTarget::Commit {
+                hash: "1234567".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_forced_commit_mixed_hex() {
+        let target = ReviewTarget::parse("a1b2c3d", true, false).unwrap();
+        assert_eq!(
+            target,
+            ReviewTarget::Commit {
+                hash: "a1b2c3d".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_forced_commit_invalid_non_hex() {
+        let result = ReviewTarget::parse("not-hex", true, false);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Invalid commit SHA"),
+            "Expected error about invalid commit SHA, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_parse_forced_commit_too_short() {
+        let result = ReviewTarget::parse("abc", true, false);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Invalid commit SHA"),
+            "Expected error about invalid commit SHA, got: {}",
+            err
+        );
+    }
+
+    // --- Forced --pr flag tests ---
+
+    #[test]
+    fn test_parse_forced_pr_all_digits() {
+        let target = ReviewTarget::parse("1234567", false, true).unwrap();
+        assert_eq!(target, ReviewTarget::PullRequest { pr_number: 1234567 });
+    }
+
+    #[test]
+    fn test_parse_forced_pr_invalid_non_numeric() {
+        let result = ReviewTarget::parse("abc", false, true);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Invalid PR number"),
+            "Expected error about invalid PR number, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_parse_forced_pr_zero() {
+        let result = ReviewTarget::parse("0", false, true);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("PR numbers start at 1"),
+            "Expected error about PR numbers, got: {}",
+            err
+        );
     }
 
     // --- status_to_char tests ---

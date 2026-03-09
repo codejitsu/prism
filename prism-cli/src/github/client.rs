@@ -1,10 +1,17 @@
 use std::env;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use reqwest::Client;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 
 use super::types::{CommitResponse, PullRequest, PullRequestFile};
+
+/// Default connect timeout for HTTP requests.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Default overall request timeout for HTTP requests.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// HTTP client for the GitHub REST API.
 ///
@@ -24,10 +31,13 @@ impl GitHubClient {
         let token = env::var("GITHUB_TOKEN")
             .context("GITHUB_TOKEN environment variable is not set. Set it to a GitHub personal access token.")?;
 
-        Ok(Self {
-            client: Client::new(),
-            token,
-        })
+        let client = Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .context("Failed to build HTTP client")?;
+
+        Ok(Self { client, token })
     }
 
     /// Fetch pull request metadata.
