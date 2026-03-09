@@ -14,5 +14,7 @@ clap = { version = "4.5.60", features = ["derive"] }
 env_logger = "0.11.5"
 log = { version = "0.4.17", features = ["std"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rig-core = "0.32"
+schemars = "1"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
