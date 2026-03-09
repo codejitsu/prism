@@ -78,43 +78,64 @@ impl GitHubClient {
             .context("Failed to parse pull request response")
     }
 
-    /// Fetch the list of files changed in a pull request.
+    /// Fetch all files changed in a pull request, handling GitHub pagination.
     pub async fn fetch_pull_request_files(
         &self,
         owner: &str,
         repo: &str,
         pr_number: u64,
     ) -> Result<Vec<PullRequestFile>> {
-        let url = format!(
+        let base_url = format!(
             "https://api.github.com/repos/{}/{}/pulls/{}/files",
             owner, repo, pr_number
         );
 
-        let response = self
-            .client
-            .get(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", self.token))
-            .header(ACCEPT, "application/vnd.github.v3+json")
-            .header(USER_AGENT, "prism-cli")
-            .send()
-            .await
-            .context("Failed to send request to GitHub API")?;
+        let per_page: usize = 100;
+        let mut page: u32 = 1;
+        let mut all_files = Vec::new();
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            bail!(
-                "GitHub API returned {} when fetching files for PR #{}: {}",
-                status,
-                pr_number,
-                body
-            );
+        loop {
+            let response = self
+                .client
+                .get(&base_url)
+                .query(&[
+                    ("per_page", per_page.to_string()),
+                    ("page", page.to_string()),
+                ])
+                .header(AUTHORIZATION, format!("Bearer {}", self.token))
+                .header(ACCEPT, "application/vnd.github.v3+json")
+                .header(USER_AGENT, "prism-cli")
+                .send()
+                .await
+                .context("Failed to send request to GitHub API")?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                bail!(
+                    "GitHub API returned {} when fetching files for PR #{}: {}",
+                    status,
+                    pr_number,
+                    body
+                );
+            }
+
+            let files: Vec<PullRequestFile> = response
+                .json()
+                .await
+                .context("Failed to parse pull request files response")?;
+
+            let count = files.len();
+            all_files.extend(files);
+
+            if count < per_page {
+                break;
+            }
+
+            page += 1;
         }
 
-        response
-            .json::<Vec<PullRequestFile>>()
-            .await
-            .context("Failed to parse pull request files response")
+        Ok(all_files)
     }
 
     /// Fetch a single commit by SHA.

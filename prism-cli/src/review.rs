@@ -86,6 +86,14 @@ impl ReviewTarget {
 
         let owner = parts[0].to_string();
         let repo = parts[1].to_string();
+
+        if owner.is_empty() || repo.is_empty() {
+            bail!(
+                "URL is missing owner or repo: '{}'. Expected https://github.com/owner/repo/pull/NUMBER",
+                url
+            );
+        }
+
         let pr_number: u64 = parts[3].parse().map_err(|_| {
             anyhow::anyhow!(
                 "Invalid PR number in URL: '{}'. Expected a positive integer.",
@@ -336,6 +344,30 @@ mod tests {
     fn test_parse_non_github_url_fails() {
         let result = ReviewTarget::parse("https://gitlab.com/foo/bar/pull/1");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_url_empty_owner_fails() {
+        let result = ReviewTarget::parse("https://github.com//repo/pull/1");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("missing owner or repo"),
+            "Expected error about missing owner/repo, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_parse_url_empty_repo_fails() {
+        let result = ReviewTarget::parse("https://github.com/owner//pull/1");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("missing owner or repo"),
+            "Expected error about missing owner/repo, got: {}",
+            err
+        );
     }
 
     #[test]

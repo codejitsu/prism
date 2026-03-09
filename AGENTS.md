@@ -87,7 +87,6 @@ cargo fmt -- --check
 | `anyhow`     | 1       | Application error handling           |
 | `reqwest`    | 0.12    | HTTP client for GitHub API           |
 | `serde`      | 1       | Serialization/deserialization        |
-| `serde_json` | 1       | JSON parsing                         |
 | `tokio`      | 1       | Async runtime                        |
 
 ---
