@@ -16,11 +16,24 @@ prism/
     ├── Cargo.toml        # crate manifest (name = "prism", v0.1.0)
     ├── Cargo.lock
     └── src/
-        └── main.rs       # entry point
+        ├── main.rs       # entry point, CLI parsing (async via tokio)
+        ├── review.rs     # ReviewTarget parsing + review orchestration
+        └── github/
+            ├── mod.rs    # re-exports
+            ├── client.rs # GitHub API client (GITHUB_TOKEN auth)
+            ├── repo.rs   # detect owner/repo from git remote origin
+            └── types.rs  # serde structs for GitHub API responses
 ```
 
 The binary crate lives in `prism-cli/`. There is no Cargo workspace at the
 repo root; all cargo commands must be run from `prism-cli/`.
+
+### Environment Variables
+
+| Variable       | Required | Purpose                                              |
+|----------------|----------|------------------------------------------------------|
+| `GITHUB_TOKEN` | Yes      | GitHub personal access token for API authentication  |
+| `RUST_LOG`     | No       | Override log level (default: `info`)                 |
 
 ---
 
@@ -37,6 +50,8 @@ cargo build --release
 
 # Run the CLI
 cargo run -- review <pr_number>
+cargo run -- review <github_pr_url>
+cargo run -- review <commit_sha>
 
 # Run all tests
 cargo test
@@ -69,6 +84,11 @@ cargo fmt -- --check
 | `clap`       | 4.5.60  | CLI argument parsing (derive macros) |
 | `log`        | 0.4.17  | Logging facade                       |
 | `env_logger` | 0.11.5  | Log output to stderr                 |
+| `anyhow`     | 1       | Application error handling           |
+| `reqwest`    | 0.12    | HTTP client for GitHub API           |
+| `serde`      | 1       | Serialization/deserialization        |
+| `serde_json` | 1       | JSON parsing                         |
+| `tokio`      | 1       | Async runtime                        |
 
 ---
 
@@ -170,6 +190,12 @@ Follow standard Rust conventions:
 # Quick start
 cd prism-cli
 cargo run -- review 42
+
+# Review a GitHub PR URL
+cargo run -- review https://github.com/owner/repo/pull/42
+
+# Review a commit
+cargo run -- review a1b2c3d
 
 # With debug logging
 RUST_LOG=debug cargo run -- review 42

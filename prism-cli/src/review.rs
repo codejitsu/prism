@@ -1,0 +1,398 @@
+use anyhow::{Result, bail};
+
+use crate::github::client::GitHubClient;
+use crate::github::repo;
+use crate::github::types::{CommitFile, PullRequestFile};
+
+/// The parsed target of a `prism review` invocation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReviewTarget {
+    /// A PR number in the current repo (detected from git remote).
+    PullRequest { pr_number: u64 },
+    /// A full GitHub PR URL -- owner/repo extracted from the URL.
+    PullRequestUrl {
+        owner: String,
+        repo: String,
+        pr_number: u64,
+    },
+    /// A commit hash -- reviewed as a standalone commit diff.
+    Commit { hash: String },
+}
+
+impl ReviewTarget {
+    /// Parse a user-supplied string into a `ReviewTarget`.
+    ///
+    /// Detection order:
+    /// 1. URL (starts with `http://` or `https://`) -- must be a GitHub PR URL.
+    /// 2. PR number -- parses as `u64` and is >= 1.
+    /// 3. Commit hash -- 7-40 hex characters.
+    /// 4. Otherwise -- error.
+    pub fn parse(input: &str) -> Result<Self> {
+        let input = input.trim();
+
+        // 1. URL
+        if input.starts_with("http://") || input.starts_with("https://") {
+            return Self::parse_url(input);
+        }
+
+        // 2. PR number
+        if let Ok(n) = input.parse::<u64>() {
+            if n == 0 {
+                bail!("Invalid PR number: 0. PR numbers start at 1.");
+            }
+            return Ok(ReviewTarget::PullRequest { pr_number: n });
+        }
+
+        // 3. Commit hash (7-40 hex characters)
+        if input.len() >= 7 && input.len() <= 40 && input.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(ReviewTarget::Commit {
+                hash: input.to_string(),
+            });
+        }
+
+        bail!(
+            "Could not interpret '{}' as a PR number, GitHub PR URL, or commit hash.\n\
+             Expected one of:\n  \
+               - A PR number (e.g. 42)\n  \
+               - A GitHub PR URL (e.g. https://github.com/owner/repo/pull/42)\n  \
+               - A commit SHA (e.g. a1b2c3d)",
+            input
+        );
+    }
+
+    /// Parse a GitHub PR URL like `https://github.com/owner/repo/pull/42`.
+    fn parse_url(url: &str) -> Result<Self> {
+        // Strip the scheme and host prefix
+        let path = url
+            .strip_prefix("https://github.com/")
+            .or_else(|| url.strip_prefix("http://github.com/"));
+
+        let path = match path {
+            Some(p) => p,
+            None => bail!(
+                "URL is not a GitHub URL: '{}'. Expected https://github.com/owner/repo/pull/NUMBER",
+                url
+            ),
+        };
+
+        // Expected path: owner/repo/pull/NUMBER
+        let parts: Vec<&str> = path.split('/').collect();
+        if parts.len() < 4 || parts[2] != "pull" {
+            bail!(
+                "URL is not a GitHub pull request URL: '{}'. Expected https://github.com/owner/repo/pull/NUMBER",
+                url
+            );
+        }
+
+        let owner = parts[0].to_string();
+        let repo = parts[1].to_string();
+        let pr_number: u64 = parts[3].parse().map_err(|_| {
+            anyhow::anyhow!(
+                "Invalid PR number in URL: '{}'. Expected a positive integer.",
+                parts[3]
+            )
+        })?;
+
+        if pr_number == 0 {
+            bail!("Invalid PR number: 0. PR numbers start at 1.");
+        }
+
+        Ok(ReviewTarget::PullRequestUrl {
+            owner,
+            repo,
+            pr_number,
+        })
+    }
+}
+
+/// Run the review for the given target string.
+pub async fn review(target: &str) -> Result<()> {
+    let review_target = ReviewTarget::parse(target)?;
+    let client = GitHubClient::new()?;
+
+    match review_target {
+        ReviewTarget::PullRequest { pr_number } => {
+            let repo_info = repo::detect_repo()?;
+            review_pull_request(&client, &repo_info.owner, &repo_info.repo, pr_number).await
+        }
+        ReviewTarget::PullRequestUrl {
+            owner,
+            repo,
+            pr_number,
+        } => review_pull_request(&client, &owner, &repo, pr_number).await,
+        ReviewTarget::Commit { hash } => {
+            let repo_info = repo::detect_repo()?;
+            review_commit(&client, &repo_info.owner, &repo_info.repo, &hash).await
+        }
+    }
+}
+
+/// Fetch and display a pull request review.
+async fn review_pull_request(
+    client: &GitHubClient,
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+) -> Result<()> {
+    log::info!("Fetching PR #{} from {}/{}...", pr_number, owner, repo);
+
+    let pr = client.fetch_pull_request(owner, repo, pr_number).await?;
+    let files = client
+        .fetch_pull_request_files(owner, repo, pr_number)
+        .await?;
+
+    println!();
+    println!("PR #{}: {}", pr.number, pr.title);
+    println!("Author: {}", pr.user.login);
+    println!("State:  {}", pr.state);
+    println!("Base:   {} <- {}", pr.base.ref_name, pr.head.ref_name);
+
+    if let Some(body) = &pr.body {
+        let body = body.trim();
+        if !body.is_empty() {
+            println!();
+            println!("Description:");
+            for line in body.lines() {
+                println!("  {}", line);
+            }
+        }
+    }
+
+    println!();
+    println!(
+        "Files changed ({}): +{} -{}",
+        pr.changed_files, pr.additions, pr.deletions
+    );
+
+    print_file_list_pr(&files);
+
+    if files.iter().any(|f| f.patch.is_some()) {
+        println!();
+        println!("--- Diff ---");
+        for file in &files {
+            if let Some(patch) = &file.patch {
+                println!();
+                println!("diff --git a/{} b/{}", file.filename, file.filename);
+                println!("{}", patch);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Fetch and display a commit review.
+async fn review_commit(client: &GitHubClient, owner: &str, repo: &str, sha: &str) -> Result<()> {
+    log::info!("Fetching commit {} from {}/{}...", sha, owner, repo);
+
+    let commit = client.fetch_commit(owner, repo, sha).await?;
+
+    let total_additions: u64 = commit.files.iter().map(|f| f.additions).sum();
+    let total_deletions: u64 = commit.files.iter().map(|f| f.deletions).sum();
+
+    println!();
+    println!("Commit: {}", commit.sha);
+    println!("Author: {}", commit.commit.author.name);
+    if let Some(date) = &commit.commit.author.date {
+        println!("Date:   {}", date);
+    }
+
+    let message = commit.commit.message.trim();
+    if !message.is_empty() {
+        println!();
+        println!("Message:");
+        for line in message.lines() {
+            println!("  {}", line);
+        }
+    }
+
+    println!();
+    println!(
+        "Files changed ({}): +{} -{}",
+        commit.files.len(),
+        total_additions,
+        total_deletions
+    );
+
+    print_file_list_commit(&commit.files);
+
+    if commit.files.iter().any(|f| f.patch.is_some()) {
+        println!();
+        println!("--- Diff ---");
+        for file in &commit.files {
+            if let Some(patch) = &file.patch {
+                println!();
+                println!("diff --git a/{} b/{}", file.filename, file.filename);
+                println!("{}", patch);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Print the file summary list for PR files.
+fn print_file_list_pr(files: &[PullRequestFile]) {
+    for file in files {
+        let status_char = status_to_char(&file.status);
+        println!(
+            "  {} {:<40} (+{} -{})",
+            status_char, file.filename, file.additions, file.deletions
+        );
+    }
+}
+
+/// Print the file summary list for commit files.
+fn print_file_list_commit(files: &[CommitFile]) {
+    for file in files {
+        let status_char = status_to_char(&file.status);
+        println!(
+            "  {} {:<40} (+{} -{})",
+            status_char, file.filename, file.additions, file.deletions
+        );
+    }
+}
+
+/// Map GitHub file status strings to single-character indicators.
+fn status_to_char(status: &str) -> char {
+    match status {
+        "added" => 'A',
+        "removed" => 'D',
+        "modified" => 'M',
+        "renamed" => 'R',
+        "copied" => 'C',
+        _ => '?',
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- ReviewTarget::parse tests ---
+
+    #[test]
+    fn test_parse_pr_number() {
+        let target = ReviewTarget::parse("42").unwrap();
+        assert_eq!(target, ReviewTarget::PullRequest { pr_number: 42 });
+    }
+
+    #[test]
+    fn test_parse_pr_number_one() {
+        let target = ReviewTarget::parse("1").unwrap();
+        assert_eq!(target, ReviewTarget::PullRequest { pr_number: 1 });
+    }
+
+    #[test]
+    fn test_parse_pr_number_zero_fails() {
+        let result = ReviewTarget::parse("0");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("PR numbers start at 1"),
+            "Expected error about PR numbers, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_parse_github_pr_url() {
+        let target = ReviewTarget::parse("https://github.com/octocat/hello-world/pull/99").unwrap();
+        assert_eq!(
+            target,
+            ReviewTarget::PullRequestUrl {
+                owner: "octocat".to_string(),
+                repo: "hello-world".to_string(),
+                pr_number: 99,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_github_pr_url_with_zero_fails() {
+        let result = ReviewTarget::parse("https://github.com/octocat/hello-world/pull/0");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("PR numbers start at 1"),
+            "Expected error about PR numbers, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_parse_github_issue_url_fails() {
+        let result = ReviewTarget::parse("https://github.com/octocat/hello-world/issues/10");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not a GitHub pull request URL"),
+            "Expected error about PR URL, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_parse_non_github_url_fails() {
+        let result = ReviewTarget::parse("https://gitlab.com/foo/bar/pull/1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_short_commit_hash() {
+        let target = ReviewTarget::parse("a1b2c3d").unwrap();
+        assert_eq!(
+            target,
+            ReviewTarget::Commit {
+                hash: "a1b2c3d".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_full_commit_hash() {
+        let hash = "abc123ef01234567890abcdef01234567890abcd";
+        let target = ReviewTarget::parse(hash).unwrap();
+        assert_eq!(
+            target,
+            ReviewTarget::Commit {
+                hash: hash.to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_too_short_hex_fails() {
+        // 6 hex chars -- too short for a commit hash, and not a valid u64 PR number
+        let result = ReviewTarget::parse("abcdef");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_non_hex_string_fails() {
+        let result = ReviewTarget::parse("not-valid");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_empty_string_fails() {
+        let result = ReviewTarget::parse("");
+        assert!(result.is_err());
+    }
+
+    // --- status_to_char tests ---
+
+    #[test]
+    fn test_status_to_char_known() {
+        assert_eq!(status_to_char("added"), 'A');
+        assert_eq!(status_to_char("removed"), 'D');
+        assert_eq!(status_to_char("modified"), 'M');
+        assert_eq!(status_to_char("renamed"), 'R');
+        assert_eq!(status_to_char("copied"), 'C');
+    }
+
+    #[test]
+    fn test_status_to_char_unknown() {
+        assert_eq!(status_to_char("something_else"), '?');
+    }
+}
