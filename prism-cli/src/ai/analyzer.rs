@@ -122,3 +122,117 @@ fn truncate(input: &str, max_chars: usize) -> String {
     collected.push_str("\n...[truncated]...");
     collected
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::types::{ReviewContext, ReviewFileContext};
+
+    fn sample_context_with_patch(patch: Option<String>) -> ReviewContext {
+        ReviewContext {
+            target_label: "pull_request#42".to_string(),
+            owner: "octocat".to_string(),
+            repo: "hello-world".to_string(),
+            title_or_message: "Add improved parser".to_string(),
+            body: Some("Implements parser improvements and edge-case handling".to_string()),
+            files: vec![ReviewFileContext {
+                filename: "src/parser.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 10,
+                deletions: 4,
+                patch,
+            }],
+        }
+    }
+
+    #[test]
+    fn test_truncate_without_cutoff_returns_original() {
+        let input = "short";
+        let output = truncate(input, 20);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_truncate_with_cutoff_appends_marker() {
+        let input = "abcdefghijklmnopqrstuvwxyz";
+        let output = truncate(input, 10);
+        assert!(
+            output.starts_with("abcdefghij"),
+            "Expected output to start with truncated prefix, got: {output}"
+        );
+        assert!(
+            output.contains("...[truncated]..."),
+            "Expected truncation marker, got: {output}"
+        );
+    }
+
+    #[test]
+    fn test_render_context_includes_patch_block() {
+        let context = sample_context_with_patch(Some("+added\n-removed".to_string()));
+        let rendered = render_context(&context);
+
+        assert!(rendered.contains("Target: pull_request#42"));
+        assert!(rendered.contains("Repository: octocat/hello-world"));
+        assert!(rendered.contains("- src/parser.rs [modified] (+10 -4)"));
+        assert!(rendered.contains("  Patch:"));
+        assert!(rendered.contains("  +added"));
+        assert!(rendered.contains("  -removed"));
+    }
+
+    #[test]
+    fn test_render_context_omits_empty_body() {
+        let mut context = sample_context_with_patch(None);
+        context.body = Some("   \n\t".to_string());
+
+        let rendered = render_context(&context);
+        assert!(
+            !rendered.contains("Body:"),
+            "Expected empty body to be omitted, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_render_context_truncates_large_patch() {
+        let long_patch = "x".repeat(MAX_FILE_PATCH_CHARS + 500);
+        let context = sample_context_with_patch(Some(long_patch));
+        let rendered = render_context(&context);
+
+        assert!(
+            rendered.contains("...[truncated]..."),
+            "Expected long patch to be truncated"
+        );
+    }
+
+    #[test]
+    fn test_render_context_global_limit_applies() {
+        let many_files = (0..120)
+            .map(|i| ReviewFileContext {
+                filename: format!("src/file_{i}.rs"),
+                status: "modified".to_string(),
+                additions: 50,
+                deletions: 10,
+                patch: Some("line\n".repeat(300)),
+            })
+            .collect::<Vec<_>>();
+
+        let context = ReviewContext {
+            target_label: "commit:deadbeef".to_string(),
+            owner: "octocat".to_string(),
+            repo: "hello-world".to_string(),
+            title_or_message: "Large change".to_string(),
+            body: None,
+            files: many_files,
+        };
+
+        let rendered = render_context(&context);
+
+        assert!(
+            rendered.chars().count() <= MAX_CONTEXT_CHARS + "\n...[truncated]...".chars().count(),
+            "Expected rendered context to respect global size limit"
+        );
+        assert!(
+            rendered.contains("...[truncated]..."),
+            "Expected global truncation marker for oversized context"
+        );
+    }
+}
