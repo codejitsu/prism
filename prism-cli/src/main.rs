@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 mod ai;
 mod config;
 mod github;
+mod output;
 mod review;
 
 #[derive(Parser)]
@@ -37,6 +38,10 @@ enum Command {
         /// Override AI model (used only with --ai)
         #[arg(long, requires = "ai")]
         model: Option<String>,
+
+        /// Print detailed PR/commit metadata and diffs alongside AI summary
+        #[arg(long, short = 'v', requires = "ai")]
+        verbose: bool,
     },
 
     /// Initialize configuration file at ~/.config/prism/config.toml
@@ -55,6 +60,7 @@ async fn main() {
             pr,
             ai,
             model,
+            verbose,
         }) => {
             let cfg = match config::Config::load() {
                 Ok(cfg) => cfg,
@@ -64,7 +70,14 @@ async fn main() {
                 }
             };
 
-            if let Err(e) = review::review(&target, commit, pr, ai, model.as_deref(), &cfg).await {
+            let options = review::ReviewOptions {
+                enable_ai: ai,
+                model_override: model.as_deref(),
+                verbose,
+                config: &cfg,
+            };
+
+            if let Err(e) = review::review(&target, commit, pr, options).await {
                 log::error!("{:#}", e);
                 process::exit(1);
             }
