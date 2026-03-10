@@ -1,5 +1,7 @@
 use anyhow::{Result, bail};
 
+use crate::ai::{AiReviewResult, ReviewContext, ReviewFileContext, analyze_review_context};
+use crate::config::Config;
 use crate::github::client::GitHubClient;
 use crate::github::repo;
 use crate::github::types::{CommitFile, PullRequestFile};
@@ -164,23 +166,65 @@ impl ReviewTarget {
 /// `force_commit` and `force_pr` correspond to the `--commit` / `--pr` CLI
 /// flags and are used to disambiguate inputs that could be either a PR number
 /// or a commit SHA (e.g. all-digit hex strings like "1234567").
-pub async fn review(target: &str, force_commit: bool, force_pr: bool) -> Result<()> {
+pub async fn review(
+    target: &str,
+    force_commit: bool,
+    force_pr: bool,
+    enable_ai: bool,
+    model_override: Option<&str>,
+    config: &Config,
+) -> Result<()> {
     let review_target = ReviewTarget::parse(target, force_commit, force_pr)?;
-    let client = GitHubClient::new()?;
+
+    let github_token = config.github_token().ok_or_else(|| {
+        anyhow::anyhow!(
+            "GitHub token is required. Set GITHUB_TOKEN environment variable or add it to ~/.config/prism/config.toml"
+        )
+    })?;
+    let client = GitHubClient::new(github_token)?;
 
     match review_target {
         ReviewTarget::PullRequest { pr_number } => {
             let repo_info = repo::detect_repo()?;
-            review_pull_request(&client, &repo_info.owner, &repo_info.repo, pr_number).await
+            review_pull_request(
+                &client,
+                &repo_info.owner,
+                &repo_info.repo,
+                pr_number,
+                enable_ai,
+                model_override,
+                config,
+            )
+            .await
         }
         ReviewTarget::PullRequestUrl {
             owner,
             repo,
             pr_number,
-        } => review_pull_request(&client, &owner, &repo, pr_number).await,
+        } => {
+            review_pull_request(
+                &client,
+                &owner,
+                &repo,
+                pr_number,
+                enable_ai,
+                model_override,
+                config,
+            )
+            .await
+        }
         ReviewTarget::Commit { hash } => {
             let repo_info = repo::detect_repo()?;
-            review_commit(&client, &repo_info.owner, &repo_info.repo, &hash).await
+            review_commit(
+                &client,
+                &repo_info.owner,
+                &repo_info.repo,
+                &hash,
+                enable_ai,
+                model_override,
+                config,
+            )
+            .await
         }
     }
 }
@@ -191,6 +235,9 @@ async fn review_pull_request(
     owner: &str,
     repo: &str,
     pr_number: u64,
+    enable_ai: bool,
+    model_override: Option<&str>,
+    config: &Config,
 ) -> Result<()> {
     log::info!("Fetching PR #{} from {}/{}...", pr_number, owner, repo);
 
@@ -236,11 +283,44 @@ async fn review_pull_request(
         }
     }
 
+    if enable_ai {
+        let context = build_pr_ai_context(
+            owner,
+            repo,
+            &pr.title,
+            pr.body.as_deref(),
+            &files,
+            pr_number,
+        );
+        match analyze_review_context(
+            &context,
+            model_override,
+            config.default_model(),
+            config.openai_api_key().as_deref(),
+        )
+        .await
+        {
+            Ok(result) => print_ai_sections(&result),
+            Err(err) => {
+                println!();
+                println!("AI analysis unavailable: {}", err);
+            }
+        }
+    }
+
     Ok(())
 }
 
 /// Fetch and display a commit review.
-async fn review_commit(client: &GitHubClient, owner: &str, repo: &str, sha: &str) -> Result<()> {
+async fn review_commit(
+    client: &GitHubClient,
+    owner: &str,
+    repo: &str,
+    sha: &str,
+    enable_ai: bool,
+    model_override: Option<&str>,
+    config: &Config,
+) -> Result<()> {
     log::info!("Fetching commit {} from {}/{}...", sha, owner, repo);
 
     let commit = client.fetch_commit(owner, repo, sha).await?;
@@ -286,7 +366,129 @@ async fn review_commit(client: &GitHubClient, owner: &str, repo: &str, sha: &str
         }
     }
 
+    if enable_ai {
+        let context = build_commit_ai_context(
+            owner,
+            repo,
+            &commit.commit.message,
+            &commit.files,
+            &commit.sha,
+        );
+        match analyze_review_context(
+            &context,
+            model_override,
+            config.default_model(),
+            config.openai_api_key().as_deref(),
+        )
+        .await
+        {
+            Ok(result) => print_ai_sections(&result),
+            Err(err) => {
+                println!();
+                println!("AI analysis unavailable: {}", err);
+            }
+        }
+    }
+
     Ok(())
+}
+
+fn build_pr_ai_context(
+    owner: &str,
+    repo: &str,
+    title: &str,
+    body: Option<&str>,
+    files: &[PullRequestFile],
+    pr_number: u64,
+) -> ReviewContext {
+    ReviewContext {
+        target_label: format!("pull_request#{}", pr_number),
+        owner: owner.to_string(),
+        repo: repo.to_string(),
+        title_or_message: title.to_string(),
+        body: body.map(ToString::to_string),
+        files: files
+            .iter()
+            .map(|file| ReviewFileContext {
+                filename: file.filename.clone(),
+                status: file.status.clone(),
+                additions: file.additions,
+                deletions: file.deletions,
+                patch: file.patch.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn build_commit_ai_context(
+    owner: &str,
+    repo: &str,
+    message: &str,
+    files: &[CommitFile],
+    sha: &str,
+) -> ReviewContext {
+    ReviewContext {
+        target_label: format!("commit:{}", sha),
+        owner: owner.to_string(),
+        repo: repo.to_string(),
+        title_or_message: message.to_string(),
+        body: None,
+        files: files
+            .iter()
+            .map(|file| ReviewFileContext {
+                filename: file.filename.clone(),
+                status: file.status.clone(),
+                additions: file.additions,
+                deletions: file.deletions,
+                patch: file.patch.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn print_ai_sections(result: &AiReviewResult) {
+    println!();
+    println!("=== AI Summary ===");
+    println!("{}", result.summary.overview);
+    for item in &result.summary.key_changes {
+        println!("- {}", item);
+    }
+
+    println!();
+    println!("=== Top 5 Potential Regressions ===");
+    for (index, finding) in result.regressions.findings.iter().enumerate() {
+        println!("{}. {} [{}]", index + 1, finding.title, finding.severity);
+        println!("   Why: {}", finding.rationale);
+        if !finding.affected_files.is_empty() {
+            println!("   Files: {}", finding.affected_files.join(", "));
+        }
+        println!("   Check: {}", finding.suggested_check);
+    }
+
+    println!();
+    println!("=== Production Readiness ===");
+    println!(
+        "Verdict: {} (score: {})",
+        result.prod_readiness.verdict, result.prod_readiness.readiness_score
+    );
+    print_labeled_list(
+        "Logging/Observability",
+        &result.prod_readiness.logging_and_observability,
+    );
+    print_labeled_list("Scalability", &result.prod_readiness.scalability);
+    print_labeled_list("Edge Cases", &result.prod_readiness.edge_cases);
+    print_labeled_list("Blocking Issues", &result.prod_readiness.blocking_issues);
+}
+
+fn print_labeled_list(label: &str, values: &[String]) {
+    if values.is_empty() {
+        return;
+    }
+
+    println!("{}:", label);
+    for value in values {
+        println!("- {}", value);
+    }
 }
 
 /// Print the file summary list for PR files.

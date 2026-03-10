@@ -1,4 +1,3 @@
-use std::env;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -15,7 +14,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// HTTP client for the GitHub REST API.
 ///
-/// Authenticates via a `GITHUB_TOKEN` environment variable and sends all
+/// Authenticates via a GitHub personal access token and sends all
 /// requests with the required `Accept`, `Authorization`, and `User-Agent`
 /// headers.
 pub struct GitHubClient {
@@ -24,12 +23,15 @@ pub struct GitHubClient {
 }
 
 impl GitHubClient {
-    /// Create a new client, reading the token from `GITHUB_TOKEN`.
+    /// Create a new client with the given token.
     ///
-    /// Returns an error if the environment variable is not set.
-    pub fn new() -> Result<Self> {
-        let token = env::var("GITHUB_TOKEN")
-            .context("GITHUB_TOKEN environment variable is not set. Set it to a GitHub personal access token.")?;
+    /// Returns an error if the token is empty or the HTTP client fails to build.
+    pub fn new(token: String) -> Result<Self> {
+        if token.trim().is_empty() {
+            bail!(
+                "GitHub token is required. Set GITHUB_TOKEN environment variable or add it to ~/.config/prism/config.toml"
+            );
+        }
 
         let client = Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
