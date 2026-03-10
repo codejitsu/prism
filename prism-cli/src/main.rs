@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 mod ai;
 mod config;
 mod github;
+mod output;
 mod review;
 
 #[derive(Parser)]
