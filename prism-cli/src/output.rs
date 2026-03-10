@@ -50,13 +50,18 @@ impl RichPrinter {
         println!();
     }
 
+    /// Print a section separator (double line).
+    pub fn print_separator(&self) {
+        println!("{}", "═".repeat(self.width));
+    }
+
     /// Print a pull request header.
     pub fn print_pr_header(&self, pr: &PullRequest) -> Result<()> {
         // Title with emoji
         let title = format!("PR #{}: {}", pr.number, pr.title);
         println!(
             "{}",
-            Text::styled(format!("📋 {}", title), Style::new().bold())
+            Text::styled(format!("🚀 {}", title), Style::new().bold())
                 .to_segments()
                 .to_ansi()
         );
@@ -88,6 +93,7 @@ impl RichPrinter {
         // Base/head branches
         println!("Base:   {} <- {}", pr.base.ref_name, pr.head.ref_name);
 
+        self.print_separator();
         Ok(())
     }
 
@@ -105,7 +111,7 @@ impl RichPrinter {
         // Title with emoji
         println!(
             "{}",
-            Text::styled(format!("📋 Commit {}", short_sha), Style::new().bold())
+            Text::styled(format!("🚀 Commit {}", short_sha), Style::new().bold())
                 .to_segments()
                 .to_ansi()
         );
@@ -135,6 +141,7 @@ impl RichPrinter {
             println!("Date:   {}", date);
         }
 
+        self.print_separator();
         Ok(())
     }
 
@@ -148,7 +155,7 @@ impl RichPrinter {
         // Bold header with emoji
         println!(
             "{}",
-            Text::styled("📝 Description", Style::new().bold())
+            Text::styled("Description", Style::new().bold())
                 .to_segments()
                 .to_ansi()
         );
@@ -158,6 +165,7 @@ impl RichPrinter {
         let segments = md.render(self.width);
         print!("{}", segments.to_ansi());
 
+        self.print_separator();
         Ok(())
     }
 
@@ -168,7 +176,7 @@ impl RichPrinter {
             "{}",
             Text::styled(
                 format!(
-                    "📁 Files Changed ({}) +{} -{}",
+                    "Files Changed ({}) +{} -{}",
                     stats.total_files, stats.additions, stats.deletions
                 ),
                 Style::new().bold()
@@ -206,7 +214,7 @@ impl RichPrinter {
             "{}",
             Text::styled(
                 format!(
-                    "📁 Files Changed ({}) +{} -{}",
+                    "Files Changed ({}) +{} -{}",
                     stats.total_files, stats.additions, stats.deletions
                 ),
                 Style::new().bold()
@@ -321,6 +329,7 @@ impl RichPrinter {
             );
         }
 
+        self.print_separator();
         Ok(())
     }
 
@@ -329,7 +338,7 @@ impl RichPrinter {
         // Bold header with emoji
         println!(
             "{}",
-            Text::styled("🤖 AI Summary", Style::new().bold())
+            Text::styled("AI Summary", Style::new().bold())
                 .to_segments()
                 .to_ansi()
         );
@@ -356,6 +365,7 @@ impl RichPrinter {
             }
         }
 
+        self.print_separator();
         Ok(())
     }
 
@@ -364,7 +374,7 @@ impl RichPrinter {
         // Bold header with emoji
         println!(
             "{}",
-            Text::styled("⚠️  Potential Regressions", Style::new().bold())
+            Text::styled("Potential Regressions", Style::new().bold())
                 .to_segments()
                 .to_ansi()
         );
@@ -379,6 +389,7 @@ impl RichPrinter {
                 .to_segments()
                 .to_ansi()
             );
+            self.print_separator();
             return Ok(());
         }
 
@@ -442,6 +453,7 @@ impl RichPrinter {
             }
         }
 
+        self.print_separator();
         Ok(())
     }
 
@@ -450,7 +462,7 @@ impl RichPrinter {
         // Bold header with emoji
         println!(
             "{}",
-            Text::styled("🚀 Production Readiness", Style::new().bold())
+            Text::styled("Production Readiness", Style::new().bold())
                 .to_segments()
                 .to_ansi()
         );
@@ -489,6 +501,7 @@ impl RichPrinter {
         print_section("Edge Cases", &readiness.edge_cases);
         print_section("Blocking Issues", &readiness.blocking_issues);
 
+        self.print_separator();
         Ok(())
     }
 
