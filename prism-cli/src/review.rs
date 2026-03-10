@@ -6,6 +6,18 @@ use crate::github::client::GitHubClient;
 use crate::github::repo;
 use crate::github::types::{CommitFile, PullRequestFile};
 
+/// Options controlling review output and AI analysis.
+pub struct ReviewOptions<'a> {
+    /// Whether to run AI-powered analysis.
+    pub enable_ai: bool,
+    /// Override model for AI analysis (CLI `--model` flag).
+    pub model_override: Option<&'a str>,
+    /// Whether to print detailed PR/commit metadata and diffs.
+    pub verbose: bool,
+    /// Application configuration (tokens, default model, etc.).
+    pub config: &'a Config,
+}
+
 /// The parsed target of a `prism review` invocation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReviewTarget {
@@ -170,13 +182,11 @@ pub async fn review(
     target: &str,
     force_commit: bool,
     force_pr: bool,
-    enable_ai: bool,
-    model_override: Option<&str>,
-    config: &Config,
+    options: ReviewOptions<'_>,
 ) -> Result<()> {
     let review_target = ReviewTarget::parse(target, force_commit, force_pr)?;
 
-    let github_token = config.github_token().ok_or_else(|| {
+    let github_token = options.config.github_token().ok_or_else(|| {
         anyhow::anyhow!(
             "GitHub token is required. Set GITHUB_TOKEN environment variable or add it to ~/.config/prism/config.toml"
         )
@@ -191,9 +201,7 @@ pub async fn review(
                 &repo_info.owner,
                 &repo_info.repo,
                 pr_number,
-                enable_ai,
-                model_override,
-                config,
+                &options,
             )
             .await
         }
@@ -201,30 +209,10 @@ pub async fn review(
             owner,
             repo,
             pr_number,
-        } => {
-            review_pull_request(
-                &client,
-                &owner,
-                &repo,
-                pr_number,
-                enable_ai,
-                model_override,
-                config,
-            )
-            .await
-        }
+        } => review_pull_request(&client, &owner, &repo, pr_number, &options).await,
         ReviewTarget::Commit { hash } => {
             let repo_info = repo::detect_repo()?;
-            review_commit(
-                &client,
-                &repo_info.owner,
-                &repo_info.repo,
-                &hash,
-                enable_ai,
-                model_override,
-                config,
-            )
-            .await
+            review_commit(&client, &repo_info.owner, &repo_info.repo, &hash, &options).await
         }
     }
 }
@@ -235,9 +223,7 @@ async fn review_pull_request(
     owner: &str,
     repo: &str,
     pr_number: u64,
-    enable_ai: bool,
-    model_override: Option<&str>,
-    config: &Config,
+    options: &ReviewOptions<'_>,
 ) -> Result<()> {
     log::info!("Fetching PR #{} from {}/{}...", pr_number, owner, repo);
 
@@ -246,44 +232,46 @@ async fn review_pull_request(
         .fetch_pull_request_files(owner, repo, pr_number)
         .await?;
 
-    println!();
-    println!("PR #{}: {}", pr.number, pr.title);
-    println!("Author: {}", pr.user.login);
-    println!("State:  {}", pr.state);
-    println!("Base:   {} <- {}", pr.base.ref_name, pr.head.ref_name);
-
-    if let Some(body) = &pr.body {
-        let body = body.trim();
-        if !body.is_empty() {
-            println!();
-            println!("Description:");
-            for line in body.lines() {
-                println!("  {}", line);
-            }
-        }
-    }
-
-    println!();
-    println!(
-        "Files changed ({}): +{} -{}",
-        pr.changed_files, pr.additions, pr.deletions
-    );
-
-    print_file_list_pr(&files);
-
-    if files.iter().any(|f| f.patch.is_some()) {
+    if options.verbose {
         println!();
-        println!("--- Diff ---");
-        for file in &files {
-            if let Some(patch) = &file.patch {
+        println!("PR #{}: {}", pr.number, pr.title);
+        println!("Author: {}", pr.user.login);
+        println!("State:  {}", pr.state);
+        println!("Base:   {} <- {}", pr.base.ref_name, pr.head.ref_name);
+
+        if let Some(body) = &pr.body {
+            let body = body.trim();
+            if !body.is_empty() {
                 println!();
-                println!("diff --git a/{} b/{}", file.filename, file.filename);
-                println!("{}", patch);
+                println!("Description:");
+                for line in body.lines() {
+                    println!("  {}", line);
+                }
+            }
+        }
+
+        println!();
+        println!(
+            "Files changed ({}): +{} -{}",
+            pr.changed_files, pr.additions, pr.deletions
+        );
+
+        print_file_list_pr(&files);
+
+        if files.iter().any(|f| f.patch.is_some()) {
+            println!();
+            println!("--- Diff ---");
+            for file in &files {
+                if let Some(patch) = &file.patch {
+                    println!();
+                    println!("diff --git a/{} b/{}", file.filename, file.filename);
+                    println!("{}", patch);
+                }
             }
         }
     }
 
-    if enable_ai {
+    if options.enable_ai {
         let context = build_pr_ai_context(
             owner,
             repo,
@@ -294,9 +282,9 @@ async fn review_pull_request(
         );
         match analyze_review_context(
             &context,
-            model_override,
-            config.default_model(),
-            config.openai_api_key().as_deref(),
+            options.model_override,
+            options.config.default_model(),
+            options.config.openai_api_key().as_deref(),
         )
         .await
         {
@@ -317,56 +305,56 @@ async fn review_commit(
     owner: &str,
     repo: &str,
     sha: &str,
-    enable_ai: bool,
-    model_override: Option<&str>,
-    config: &Config,
+    options: &ReviewOptions<'_>,
 ) -> Result<()> {
     log::info!("Fetching commit {} from {}/{}...", sha, owner, repo);
 
     let commit = client.fetch_commit(owner, repo, sha).await?;
 
-    let total_additions: u64 = commit.files.iter().map(|f| f.additions).sum();
-    let total_deletions: u64 = commit.files.iter().map(|f| f.deletions).sum();
+    if options.verbose {
+        let total_additions: u64 = commit.files.iter().map(|f| f.additions).sum();
+        let total_deletions: u64 = commit.files.iter().map(|f| f.deletions).sum();
 
-    println!();
-    println!("Commit: {}", commit.sha);
-    println!("Author: {}", commit.commit.author.name);
-    if let Some(date) = &commit.commit.author.date {
-        println!("Date:   {}", date);
-    }
-
-    let message = commit.commit.message.trim();
-    if !message.is_empty() {
         println!();
-        println!("Message:");
-        for line in message.lines() {
-            println!("  {}", line);
+        println!("Commit: {}", commit.sha);
+        println!("Author: {}", commit.commit.author.name);
+        if let Some(date) = &commit.commit.author.date {
+            println!("Date:   {}", date);
         }
-    }
 
-    println!();
-    println!(
-        "Files changed ({}): +{} -{}",
-        commit.files.len(),
-        total_additions,
-        total_deletions
-    );
+        let message = commit.commit.message.trim();
+        if !message.is_empty() {
+            println!();
+            println!("Message:");
+            for line in message.lines() {
+                println!("  {}", line);
+            }
+        }
 
-    print_file_list_commit(&commit.files);
-
-    if commit.files.iter().any(|f| f.patch.is_some()) {
         println!();
-        println!("--- Diff ---");
-        for file in &commit.files {
-            if let Some(patch) = &file.patch {
-                println!();
-                println!("diff --git a/{} b/{}", file.filename, file.filename);
-                println!("{}", patch);
+        println!(
+            "Files changed ({}): +{} -{}",
+            commit.files.len(),
+            total_additions,
+            total_deletions
+        );
+
+        print_file_list_commit(&commit.files);
+
+        if commit.files.iter().any(|f| f.patch.is_some()) {
+            println!();
+            println!("--- Diff ---");
+            for file in &commit.files {
+                if let Some(patch) = &file.patch {
+                    println!();
+                    println!("diff --git a/{} b/{}", file.filename, file.filename);
+                    println!("{}", patch);
+                }
             }
         }
     }
 
-    if enable_ai {
+    if options.enable_ai {
         let context = build_commit_ai_context(
             owner,
             repo,
@@ -376,9 +364,9 @@ async fn review_commit(
         );
         match analyze_review_context(
             &context,
-            model_override,
-            config.default_model(),
-            config.openai_api_key().as_deref(),
+            options.model_override,
+            options.config.default_model(),
+            options.config.openai_api_key().as_deref(),
         )
         .await
         {
