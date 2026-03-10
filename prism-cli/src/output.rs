@@ -1,7 +1,7 @@
 //! Rich terminal output for Prism CLI.
 //!
 //! This module provides beautiful terminal output using the `richrs` crate,
-//! including panels, tables, syntax-highlighted diffs, and spinners.
+//! including syntax-highlighted diffs, markdown rendering, and spinners.
 
 use std::future::Future;
 use std::io::{self, Write};
@@ -9,10 +9,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use richrs::color::{Color, StandardColor};
-use richrs::panel::Panel;
 use richrs::style::Style;
 use richrs::syntax::Syntax;
-use richrs::table::{Column, Row, Table};
 use richrs::text::Text;
 
 use crate::ai::{ProdReadinessReport, RegressionReport, Summary};
@@ -52,49 +50,48 @@ impl RichPrinter {
         println!();
     }
 
-    /// Print a pull request header panel.
+    /// Print a pull request header.
     pub fn print_pr_header(&self, pr: &PullRequest) -> Result<()> {
-        // Build title with PR number
+        // Title with emoji
         let title = format!("PR #{}: {}", pr.number, pr.title);
+        println!(
+            "{}",
+            Text::styled(format!("📋 {}", title), Style::new().bold())
+                .to_segments()
+                .to_ansi()
+        );
+        println!();
 
-        // Color the state
-        let state_color = match pr.state.as_str() {
-            "open" => Color::Standard(StandardColor::Green),
-            "closed" => Color::Standard(StandardColor::Red),
-            "merged" => Color::Standard(StandardColor::Magenta),
-            _ => Color::Default,
-        };
-
-        // Build content with styled text
-        let content = Text::assemble([
-            (
+        // Author in cyan
+        println!(
+            "{}",
+            Text::styled(
                 format!("Author: {}", pr.user.login),
-                Some(Style::new().with_color(Color::Standard(StandardColor::Cyan))),
-            ),
-            ("\n".to_string(), None),
-            (
-                format!("State:  {}", pr.state),
-                Some(Style::new().with_color(state_color)),
-            ),
-            ("\n".to_string(), None),
-            (
-                format!("Base:   {} <- {}", pr.base.ref_name, pr.head.ref_name),
-                None,
-            ),
-        ]);
+                Style::new().with_color(Color::Standard(StandardColor::Cyan))
+            )
+            .to_segments()
+            .to_ansi()
+        );
 
-        let panel = Panel::new(content)
-            .title(Text::styled(title, Style::new().bold()))
-            .border_style(Style::new().with_color(Color::Standard(StandardColor::Blue)))
-            .width(self.width);
+        // State with color
+        let state_style = match pr.state.as_str() {
+            "open" => Style::new().with_color(Color::Standard(StandardColor::Green)),
+            "closed" => Style::new().with_color(Color::Standard(StandardColor::Red)),
+            "merged" => Style::new().with_color(Color::Standard(StandardColor::Magenta)),
+            _ => Style::new(),
+        };
+        println!(
+            "State:  {}",
+            Text::styled(&pr.state, state_style).to_segments().to_ansi()
+        );
 
-        let segments = panel.render(self.width);
-        print!("{}", segments.to_ansi());
+        // Base/head branches
+        println!("Base:   {} <- {}", pr.base.ref_name, pr.head.ref_name);
 
         Ok(())
     }
 
-    /// Print a commit header panel.
+    /// Print a commit header.
     pub fn print_commit_header(&self, commit: &CommitResponse) -> Result<()> {
         // Extract first line of commit message as title
         let message_first_line = commit
@@ -103,126 +100,139 @@ impl RichPrinter {
             .lines()
             .next()
             .unwrap_or("(no message)");
-        let title = format!("Commit: {}", &commit.sha[..7.min(commit.sha.len())]);
+        let short_sha = &commit.sha[..7.min(commit.sha.len())];
 
-        // Build content
-        let mut parts: Vec<(String, Option<Style>)> = vec![
-            (message_first_line.to_string(), Some(Style::new().bold())),
-            ("\n".to_string(), None),
-            (
+        // Title with emoji
+        println!(
+            "{}",
+            Text::styled(format!("📋 Commit {}", short_sha), Style::new().bold())
+                .to_segments()
+                .to_ansi()
+        );
+        println!();
+
+        // Message first line in bold
+        println!(
+            "{}",
+            Text::styled(message_first_line, Style::new().bold())
+                .to_segments()
+                .to_ansi()
+        );
+
+        // Author in cyan
+        println!(
+            "{}",
+            Text::styled(
                 format!("Author: {}", commit.commit.author.name),
-                Some(Style::new().with_color(Color::Standard(StandardColor::Cyan))),
-            ),
-        ];
+                Style::new().with_color(Color::Standard(StandardColor::Cyan))
+            )
+            .to_segments()
+            .to_ansi()
+        );
 
+        // Date if present
         if let Some(date) = &commit.commit.author.date {
-            parts.push(("\n".to_string(), None));
-            parts.push((format!("Date:   {}", date), None));
+            println!("Date:   {}", date);
         }
-
-        let content = Text::assemble(parts);
-
-        let panel = Panel::new(content)
-            .title(Text::styled(title, Style::new().bold()))
-            .border_style(Style::new().with_color(Color::Standard(StandardColor::Blue)))
-            .width(self.width);
-
-        let segments = panel.render(self.width);
-        print!("{}", segments.to_ansi());
 
         Ok(())
     }
 
-    /// Print a description panel with markdown rendering.
+    /// Print a description with markdown rendering.
     pub fn print_description(&self, body: &str) -> Result<()> {
         let body = body.trim();
         if body.is_empty() {
             return Ok(());
         }
 
-        // Print title header
-        let title_style = Style::new().bold();
-        let border_style = Style::new().dim();
+        // Bold header with emoji
         println!(
-            "{}── {} {}",
-            border_style.to_ansi(),
-            Text::styled("Description", title_style)
+            "{}",
+            Text::styled("📝 Description", Style::new().bold())
                 .to_segments()
-                .to_ansi(),
-            "─".repeat(self.width.saturating_sub(16))
+                .to_ansi()
         );
 
-        // Use richrs markdown rendering directly (Markdown doesn't impl Into<Text>)
+        // Render markdown
         let md = richrs::markdown::Markdown::new(body);
         let segments = md.render(self.width);
         print!("{}", segments.to_ansi());
 
-        println!();
         Ok(())
     }
 
-    /// Print a files changed table for PR files.
+    /// Print a files changed list for PR files.
     pub fn print_files_table_pr(&self, files: &[PullRequestFile], stats: FileStats) -> Result<()> {
-        let title = format!(
-            "Files Changed ({}) +{} -{}",
-            stats.total_files, stats.additions, stats.deletions
+        // Bold header with emoji
+        println!(
+            "{}",
+            Text::styled(
+                format!(
+                    "📁 Files Changed ({}) +{} -{}",
+                    stats.total_files, stats.additions, stats.deletions
+                ),
+                Style::new().bold()
+            )
+            .to_segments()
+            .to_ansi()
         );
-
-        let mut table = Table::new().title(Text::styled(title, Style::new().bold()));
-
-        table.add_column(Column::new("St"));
-        table.add_column(Column::new("File"));
-        table.add_column(Column::new("Changes"));
 
         for file in files {
             let (status_char, status_style) = status_to_styled_char(&file.status);
             let changes = format!("+{} -{}", file.additions, file.deletions);
 
-            table.add_row(Row::new([
-                Text::styled(status_char.to_string(), status_style),
-                Text::from_str(&file.filename),
+            println!(
+                "  {} {} ({})",
+                Text::styled(status_char.to_string(), status_style)
+                    .to_segments()
+                    .to_ansi(),
+                file.filename,
                 Text::styled(
                     changes,
-                    Style::new().with_color(Color::Standard(StandardColor::Green)),
-                ),
-            ]));
+                    Style::new().with_color(Color::Standard(StandardColor::Cyan))
+                )
+                .to_segments()
+                .to_ansi()
+            );
         }
-
-        let segments = table.render(self.width);
-        print!("{}", segments.to_ansi());
 
         Ok(())
     }
 
-    /// Print a files changed table for commit files.
+    /// Print a files changed list for commit files.
     pub fn print_files_table_commit(&self, files: &[CommitFile], stats: FileStats) -> Result<()> {
-        let title = format!(
-            "Files Changed ({}) +{} -{}",
-            stats.total_files, stats.additions, stats.deletions
+        // Bold header with emoji
+        println!(
+            "{}",
+            Text::styled(
+                format!(
+                    "📁 Files Changed ({}) +{} -{}",
+                    stats.total_files, stats.additions, stats.deletions
+                ),
+                Style::new().bold()
+            )
+            .to_segments()
+            .to_ansi()
         );
-
-        let mut table = Table::new().title(Text::styled(title, Style::new().bold()));
-
-        table.add_column(Column::new("St"));
-        table.add_column(Column::new("File"));
-        table.add_column(Column::new("Changes"));
 
         for file in files {
             let (status_char, status_style) = status_to_styled_char(&file.status);
             let changes = format!("+{} -{}", file.additions, file.deletions);
 
-            table.add_row(Row::new([
-                Text::styled(status_char.to_string(), status_style),
-                Text::from_str(&file.filename),
+            println!(
+                "  {} {} ({})",
+                Text::styled(status_char.to_string(), status_style)
+                    .to_segments()
+                    .to_ansi(),
+                file.filename,
                 Text::styled(
                     changes,
-                    Style::new().with_color(Color::Standard(StandardColor::Green)),
-                ),
-            ]));
+                    Style::new().with_color(Color::Standard(StandardColor::Cyan))
+                )
+                .to_segments()
+                .to_ansi()
+            );
         }
-
-        let segments = table.render(self.width);
-        print!("{}", segments.to_ansi());
 
         Ok(())
     }
@@ -274,19 +284,18 @@ impl RichPrinter {
 
             total_lines += lines_to_show;
 
-            // Print diff header
-            let header_style = Style::new().bold().dim();
+            // Print diff header (bold, dim)
             println!(
                 "{}",
                 Text::styled(
                     format!("diff --git a/{} b/{}", filename, filename),
-                    header_style
+                    Style::new().bold().dim()
                 )
                 .to_segments()
                 .to_ansi()
             );
 
-            // Use diff syntax highlighting (Syntax doesn't impl Into<Text>)
+            // Syntax-highlighted diff
             let syntax = Syntax::new(&display_patch, "diff");
             let segments = syntax.render(self.width);
             print!("{}", segments.to_ansi());
@@ -300,73 +309,78 @@ impl RichPrinter {
 
         if truncated {
             println!(
-                "\x1b[33m\x1b[3m... showing first {} lines of diff\x1b[0m",
-                MAX_DIFF_LINES
+                "{}",
+                Text::styled(
+                    format!("... showing first {} lines of diff", MAX_DIFF_LINES),
+                    Style::new()
+                        .italic()
+                        .with_color(Color::Standard(StandardColor::Yellow))
+                )
+                .to_segments()
+                .to_ansi()
             );
         }
 
         Ok(())
     }
 
-    /// Print AI summary panel.
+    /// Print AI summary.
     pub fn print_ai_summary(&self, summary: &Summary) -> Result<()> {
-        let mut parts: Vec<(String, Option<Style>)> =
-            vec![(summary.overview.clone(), None), ("\n".to_string(), None)];
+        // Bold header with emoji
+        println!(
+            "{}",
+            Text::styled("🤖 AI Summary", Style::new().bold())
+                .to_segments()
+                .to_ansi()
+        );
 
-        for item in &summary.key_changes {
-            parts.push((format!("\n  • {}", item), Some(Style::new().dim())));
+        // Overview
+        println!("{}", summary.overview);
+
+        // Key changes as bullet points
+        if !summary.key_changes.is_empty() {
+            println!();
+            println!(
+                "{}",
+                Text::styled("Key changes:", Style::new().bold())
+                    .to_segments()
+                    .to_ansi()
+            );
+            for item in &summary.key_changes {
+                println!(
+                    "  {}",
+                    Text::styled(format!("• {}", item), Style::new().dim())
+                        .to_segments()
+                        .to_ansi()
+                );
+            }
         }
-
-        let content = Text::assemble(parts);
-
-        let panel = Panel::new(content)
-            .title(Text::styled(
-                "AI Summary",
-                Style::new()
-                    .bold()
-                    .with_color(Color::Standard(StandardColor::Cyan)),
-            ))
-            .border_style(Style::new().with_color(Color::Standard(StandardColor::Cyan)))
-            .width(self.width);
-
-        let segments = panel.render(self.width);
-        print!("{}", segments.to_ansi());
 
         Ok(())
     }
 
-    /// Print regressions table.
+    /// Print regressions as a list.
     pub fn print_regressions(&self, regressions: &RegressionReport) -> Result<()> {
-        if regressions.findings.is_empty() {
-            let panel = Panel::new(Text::styled(
-                "No potential regressions identified.",
-                Style::new().with_color(Color::Standard(StandardColor::Green)),
-            ))
-            .title(Text::styled(
-                "Potential Regressions",
-                Style::new()
-                    .bold()
-                    .with_color(Color::Standard(StandardColor::Yellow)),
-            ))
-            .border_style(Style::new().with_color(Color::Standard(StandardColor::Yellow)))
-            .width(self.width);
+        // Bold header with emoji
+        println!(
+            "{}",
+            Text::styled("⚠️  Potential Regressions", Style::new().bold())
+                .to_segments()
+                .to_ansi()
+        );
 
-            let segments = panel.render(self.width);
-            print!("{}", segments.to_ansi());
+        if regressions.findings.is_empty() {
+            println!(
+                "{}",
+                Text::styled(
+                    "No potential regressions identified.",
+                    Style::new().with_color(Color::Standard(StandardColor::Green))
+                )
+                .to_segments()
+                .to_ansi()
+            );
             return Ok(());
         }
-
-        let mut table = Table::new().title(Text::styled(
-            "Top 5 Potential Regressions",
-            Style::new()
-                .bold()
-                .with_color(Color::Standard(StandardColor::Yellow)),
-        ));
-
-        table.add_column(Column::new("#"));
-        table.add_column(Column::new("Issue"));
-        table.add_column(Column::new("Severity"));
-        table.add_column(Column::new("Files"));
 
         for (index, finding) in regressions.findings.iter().enumerate() {
             let severity_style = match finding.severity.to_uppercase().as_str() {
@@ -378,99 +392,114 @@ impl RichPrinter {
                 _ => Style::new(),
             };
 
-            let files_display = if finding.affected_files.is_empty() {
-                "-".to_string()
-            } else {
-                finding.affected_files.join(", ")
-            };
+            // Numbered item with severity
+            println!(
+                "{}. [{}] {}",
+                index + 1,
+                Text::styled(&finding.severity, severity_style)
+                    .to_segments()
+                    .to_ansi(),
+                Text::styled(&finding.title, Style::new().bold())
+                    .to_segments()
+                    .to_ansi()
+            );
 
-            table.add_row(Row::new([
-                Text::from_str(format!("{}", index + 1)),
-                Text::from_str(&finding.title),
-                Text::styled(&finding.severity, severity_style),
-                Text::from_str(&files_display),
-            ]));
-        }
+            // Why (rationale)
+            println!(
+                "   {}",
+                Text::styled(format!("Why: {}", finding.rationale), Style::new().dim())
+                    .to_segments()
+                    .to_ansi()
+            );
 
-        let segments = table.render(self.width);
-        print!("{}", segments.to_ansi());
+            // Files if present
+            if !finding.affected_files.is_empty() {
+                println!(
+                    "   {}",
+                    Text::styled(
+                        format!("Files: {}", finding.affected_files.join(", ")),
+                        Style::new().dim()
+                    )
+                    .to_segments()
+                    .to_ansi()
+                );
+            }
 
-        // Print details for each finding
-        for (index, finding) in regressions.findings.iter().enumerate() {
-            let content = Text::assemble([
-                (
-                    format!("Why: {}", finding.rationale),
-                    Some(Style::new().dim()),
-                ),
-                ("\n".to_string(), None),
-                (
+            // Check (suggested verification)
+            println!(
+                "   {}",
+                Text::styled(
                     format!("Check: {}", finding.suggested_check),
-                    Some(Style::new().italic()),
-                ),
-            ]);
+                    Style::new().italic()
+                )
+                .to_segments()
+                .to_ansi()
+            );
 
-            let panel = Panel::new(content)
-                .title(Text::from_str(format!("{}. {}", index + 1, finding.title)))
-                .border_style(Style::new().dim())
-                .width(self.width);
-
-            let segments = panel.render(self.width);
-            print!("{}", segments.to_ansi());
+            // Add spacing between findings
+            if index < regressions.findings.len() - 1 {
+                println!();
+            }
         }
 
         Ok(())
     }
 
-    /// Print production readiness panel.
+    /// Print production readiness.
     pub fn print_prod_readiness(&self, readiness: &ProdReadinessReport) -> Result<()> {
-        // Color based on score
-        let score_color = if readiness.readiness_score >= 80 {
-            Color::Standard(StandardColor::Green)
+        // Bold header with emoji
+        println!(
+            "{}",
+            Text::styled("🚀 Production Readiness", Style::new().bold())
+                .to_segments()
+                .to_ansi()
+        );
+
+        // Verdict with color based on score
+        let score_style = if readiness.readiness_score >= 80 {
+            Style::new()
+                .bold()
+                .with_color(Color::Standard(StandardColor::Green))
         } else if readiness.readiness_score >= 50 {
-            Color::Standard(StandardColor::Yellow)
+            Style::new()
+                .bold()
+                .with_color(Color::Standard(StandardColor::Yellow))
         } else {
-            Color::Standard(StandardColor::Red)
+            Style::new()
+                .bold()
+                .with_color(Color::Standard(StandardColor::Red))
         };
 
-        let mut parts: Vec<(String, Option<Style>)> = vec![(
-            format!(
-                "Verdict: {} (score: {})",
-                readiness.verdict, readiness.readiness_score
-            ),
-            Some(Style::new().bold().with_color(score_color)),
-        )];
+        println!(
+            "Verdict: {} (score: {})",
+            Text::styled(&readiness.verdict, score_style.clone())
+                .to_segments()
+                .to_ansi(),
+            Text::styled(readiness.readiness_score.to_string(), score_style)
+                .to_segments()
+                .to_ansi()
+        );
 
-        // Add subsections
-        append_section_parts(
-            &mut parts,
+        // Subsections
+        print_section(
             "Logging/Observability",
             &readiness.logging_and_observability,
         );
-        append_section_parts(&mut parts, "Scalability", &readiness.scalability);
-        append_section_parts(&mut parts, "Edge Cases", &readiness.edge_cases);
-        append_section_parts(&mut parts, "Blocking Issues", &readiness.blocking_issues);
-
-        let content = Text::assemble(parts);
-
-        let panel = Panel::new(content)
-            .title(Text::styled(
-                "Production Readiness",
-                Style::new()
-                    .bold()
-                    .with_color(Color::Standard(StandardColor::Magenta)),
-            ))
-            .border_style(Style::new().with_color(Color::Standard(StandardColor::Magenta)))
-            .width(self.width);
-
-        let segments = panel.render(self.width);
-        print!("{}", segments.to_ansi());
+        print_section("Scalability", &readiness.scalability);
+        print_section("Edge Cases", &readiness.edge_cases);
+        print_section("Blocking Issues", &readiness.blocking_issues);
 
         Ok(())
     }
 
     /// Print an error message.
     pub fn print_error(&self, message: &str) {
-        println!("\x1b[1;31mError: {}\x1b[0m", message);
+        println!(
+            "{}",
+            Text::styled(format!("Error: {}", message), Style::new().bold())
+                .to_segments()
+                .to_ansi()
+        );
     }
 }
 
@@ -480,16 +509,26 @@ impl Default for RichPrinter {
     }
 }
 
-/// Append a labeled section to parts.
-fn append_section_parts(parts: &mut Vec<(String, Option<Style>)>, label: &str, items: &[String]) {
+/// Print a labeled section with bullet points.
+fn print_section(label: &str, items: &[String]) {
     if items.is_empty() {
         return;
     }
 
-    parts.push(("\n\n".to_string(), None));
-    parts.push((format!("{}:", label), Some(Style::new().bold())));
+    println!();
+    println!(
+        "{}",
+        Text::styled(format!("{}:", label), Style::new().bold())
+            .to_segments()
+            .to_ansi()
+    );
     for item in items {
-        parts.push((format!("\n  • {}", item), Some(Style::new().dim())));
+        println!(
+            "  {}",
+            Text::styled(format!("• {}", item), Style::new().dim())
+                .to_segments()
+                .to_ansi()
+        );
     }
 }
 
@@ -523,7 +562,7 @@ fn status_to_styled_char(status: &str) -> (char, Style) {
 /// Execute an async operation with a spinner.
 ///
 /// Shows a spinner animation while the operation runs, then displays
-/// a success (✓) or error (✗) indicator when complete.
+/// a success or error indicator when complete.
 pub async fn with_spinner<T, F, Fut>(message: &str, f: F) -> Result<T>
 where
     F: FnOnce() -> Fut,
