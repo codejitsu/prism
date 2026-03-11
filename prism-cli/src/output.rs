@@ -16,9 +16,6 @@ use richrs::text::Text;
 use crate::ai::{ProdReadinessReport, RegressionReport, Severity, Summary};
 use crate::github::types::{CommitFile, CommitResponse, PullRequest, PullRequestFile};
 
-/// Maximum terminal width (capped for readability).
-const MAX_WIDTH: usize = 120;
-
 /// Maximum number of diff lines to show before truncating.
 const MAX_DIFF_LINES: usize = 500;
 
@@ -37,10 +34,9 @@ pub struct RichPrinter {
 impl RichPrinter {
     /// Create a new RichPrinter with auto-detected terminal width.
     pub fn new() -> Self {
-        let term_width = crossterm::terminal::size()
+        let width = crossterm::terminal::size()
             .map(|(w, _)| w as usize)
             .unwrap_or(80);
-        let width = term_width.min(MAX_WIDTH);
 
         Self { width }
     }
@@ -51,8 +47,13 @@ impl RichPrinter {
     }
 
     /// Print a section separator (double line).
+    ///
+    /// Queries the current terminal width each time to support live resizing.
     pub fn print_separator(&self) {
-        println!("{}", "═".repeat(self.width));
+        let width = crossterm::terminal::size()
+            .map(|(w, _)| w as usize)
+            .unwrap_or(80);
+        println!("{}", "═".repeat(width));
     }
 
     /// Print a pull request header.
@@ -650,7 +651,6 @@ mod tests {
     #[test]
     fn test_rich_printer_new() {
         let printer = RichPrinter::new();
-        assert!(printer.width <= MAX_WIDTH);
         assert!(printer.width > 0);
     }
 
