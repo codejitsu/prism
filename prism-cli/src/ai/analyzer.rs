@@ -54,12 +54,16 @@ impl AnalyzerConfig {
         })
     }
 
-    /// Initialize the OpenAI environment and return the model name.
-    /// Call this once before making any analysis calls.
+    /// Initialize the OpenAI environment for an analysis call.
+    ///
+    /// Sets the `OPENAI_API_KEY` environment variable so that
+    /// `rig::providers::openai::Client::from_env()` can pick it up. Called
+    /// by each `analyze_*` method before creating a client.
     fn init_env(&self) {
-        // Set env var for rig's from_env() to pick up
-        // SAFETY: We are setting this before spawning any threads that might read it,
-        // and we only set it once at the start of AI analysis.
+        // SAFETY: In Rust 2024 edition, env::set_var is unsafe because it can
+        // cause data races. We always set the same key to the same value from
+        // the configured API key, and this runs on the main async runtime
+        // before spawning the OpenAI client.
         unsafe {
             env::set_var("OPENAI_API_KEY", &self.api_key);
         }
