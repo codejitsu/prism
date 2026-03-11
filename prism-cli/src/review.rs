@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 
-use crate::ai::{AnalyzerConfig, ReviewContext, ReviewFileContext};
+use crate::ai::{AnalyzerConfig, ReviewContext, ReviewFileContext, render_context};
 use crate::config::Config;
 use crate::github::client::GitHubClient;
 use crate::github::repo;
@@ -273,16 +273,17 @@ async fn review_pull_request(
         pr_number,
     );
 
-    // Build analyzer config
+    // Build analyzer config and render context once
     let analyzer = AnalyzerConfig::new(
         options.model_override,
         options.config.default_model(),
         options.config.openai_api_key().as_deref(),
     )?;
+    let flattened_context = render_context(&context);
 
     // Generate summary with spinner
     let summary_result = with_spinner("Generating summary...", || async {
-        analyzer.analyze_summary(&context).await
+        analyzer.analyze_summary(&flattened_context).await
     })
     .await;
 
@@ -299,7 +300,7 @@ async fn review_pull_request(
 
     // Analyze regressions with spinner
     let regressions_result = with_spinner("Analyzing regressions...", || async {
-        analyzer.analyze_regressions(&context).await
+        analyzer.analyze_regressions(&flattened_context).await
     })
     .await;
 
@@ -316,7 +317,7 @@ async fn review_pull_request(
 
     // Check production readiness with spinner
     let prod_result = with_spinner("Checking production readiness...", || async {
-        analyzer.analyze_prod_readiness(&context).await
+        analyzer.analyze_prod_readiness(&flattened_context).await
     })
     .await;
 
@@ -395,16 +396,17 @@ async fn review_commit(
         &commit.sha,
     );
 
-    // Build analyzer config
+    // Build analyzer config and render context once
     let analyzer = AnalyzerConfig::new(
         options.model_override,
         options.config.default_model(),
         options.config.openai_api_key().as_deref(),
     )?;
+    let flattened_context = render_context(&context);
 
     // Generate summary with spinner
     let summary_result = with_spinner("Generating summary...", || async {
-        analyzer.analyze_summary(&context).await
+        analyzer.analyze_summary(&flattened_context).await
     })
     .await;
 
@@ -421,7 +423,7 @@ async fn review_commit(
 
     // Analyze regressions with spinner
     let regressions_result = with_spinner("Analyzing regressions...", || async {
-        analyzer.analyze_regressions(&context).await
+        analyzer.analyze_regressions(&flattened_context).await
     })
     .await;
 
@@ -438,7 +440,7 @@ async fn review_commit(
 
     // Check production readiness with spinner
     let prod_result = with_spinner("Checking production readiness...", || async {
-        analyzer.analyze_prod_readiness(&context).await
+        analyzer.analyze_prod_readiness(&flattened_context).await
     })
     .await;
 

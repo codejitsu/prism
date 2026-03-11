@@ -70,7 +70,9 @@ impl AnalyzerConfig {
     }
 
     /// Analyze the summary section.
-    pub async fn analyze_summary(&self, context: &ReviewContext) -> Result<Summary> {
+    ///
+    /// Takes a pre-rendered context string (from [`render_context`]).
+    pub async fn analyze_summary(&self, flattened_context: &str) -> Result<Summary> {
         self.init_env();
         let openai_client = openai::Client::from_env();
         let agent = openai_client
@@ -79,10 +81,9 @@ impl AnalyzerConfig {
             .max_tokens(2_000)
             .build();
 
-        let flattened_context = render_context(context);
         tokio::time::timeout(Duration::from_secs(SECTION_TIMEOUT_SECS), async {
             agent
-                .prompt_typed::<Summary>(summary_prompt(&flattened_context))
+                .prompt_typed::<Summary>(summary_prompt(flattened_context))
                 .await
                 .map_err(|err| anyhow::anyhow!("failed to generate AI summary section: {err}"))
         })
@@ -91,7 +92,9 @@ impl AnalyzerConfig {
     }
 
     /// Analyze for potential regressions.
-    pub async fn analyze_regressions(&self, context: &ReviewContext) -> Result<RegressionReport> {
+    ///
+    /// Takes a pre-rendered context string (from [`render_context`]).
+    pub async fn analyze_regressions(&self, flattened_context: &str) -> Result<RegressionReport> {
         self.init_env();
         let openai_client = openai::Client::from_env();
         let agent = openai_client
@@ -100,10 +103,9 @@ impl AnalyzerConfig {
             .max_tokens(2_000)
             .build();
 
-        let flattened_context = render_context(context);
         tokio::time::timeout(Duration::from_secs(SECTION_TIMEOUT_SECS), async {
             agent
-                .prompt_typed::<RegressionReport>(regressions_prompt(&flattened_context))
+                .prompt_typed::<RegressionReport>(regressions_prompt(flattened_context))
                 .await
                 .map_err(|err| anyhow::anyhow!("failed to generate AI regressions section: {err}"))
         })
@@ -112,9 +114,11 @@ impl AnalyzerConfig {
     }
 
     /// Analyze production readiness.
+    ///
+    /// Takes a pre-rendered context string (from [`render_context`]).
     pub async fn analyze_prod_readiness(
         &self,
-        context: &ReviewContext,
+        flattened_context: &str,
     ) -> Result<ProdReadinessReport> {
         self.init_env();
         let openai_client = openai::Client::from_env();
@@ -124,10 +128,9 @@ impl AnalyzerConfig {
             .max_tokens(2_000)
             .build();
 
-        let flattened_context = render_context(context);
         tokio::time::timeout(Duration::from_secs(SECTION_TIMEOUT_SECS), async {
             agent
-                .prompt_typed::<ProdReadinessReport>(prod_readiness_prompt(&flattened_context))
+                .prompt_typed::<ProdReadinessReport>(prod_readiness_prompt(flattened_context))
                 .await
                 .map_err(|err| {
                     anyhow::anyhow!("failed to generate AI production readiness section: {err}")
@@ -138,7 +141,11 @@ impl AnalyzerConfig {
     }
 }
 
-fn render_context(context: &ReviewContext) -> String {
+/// Render a [`ReviewContext`] into a flattened string for AI prompts.
+///
+/// Call this once and pass the result to the `analyze_*` methods to avoid
+/// re-rendering on each analysis call.
+pub fn render_context(context: &ReviewContext) -> String {
     let mut out = String::new();
     let _ = writeln!(&mut out, "Target: {}", context.target_label);
     let _ = writeln!(&mut out, "Repository: {}/{}", context.owner, context.repo);
