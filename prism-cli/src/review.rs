@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 
-use crate::ai::{AiReviewResult, ReviewContext, ReviewFileContext, analyze_review_context};
+use crate::ai::{AnalyzerConfig, ReviewContext, ReviewFileContext, render_context};
 use crate::config::Config;
 use crate::github::client::GitHubClient;
 use crate::github::repo;
@@ -273,30 +273,7 @@ async fn review_pull_request(
         pr_number,
     );
 
-    // Run AI analysis with spinner
-    let ai_result = with_spinner("Running AI analysis...", || async {
-        analyze_review_context(
-            &context,
-            options.model_override,
-            options.config.default_model(),
-            options.config.openai_api_key().as_deref(),
-        )
-        .await
-    })
-    .await;
-
-    match ai_result {
-        Ok(result) => {
-            printer.newline();
-            print_ai_sections_rich(&printer, &result)?;
-        }
-        Err(err) => {
-            printer.newline();
-            printer.print_error(&format!("AI analysis unavailable: {}", err));
-        }
-    }
-
-    Ok(())
+    run_ai_analysis(&context, options, &printer).await
 }
 
 /// Fetch and display a commit review.
@@ -360,26 +337,73 @@ async fn review_commit(
         &commit.sha,
     );
 
-    // Run AI analysis with spinner
-    let ai_result = with_spinner("Running AI analysis...", || async {
-        analyze_review_context(
-            &context,
-            options.model_override,
-            options.config.default_model(),
-            options.config.openai_api_key().as_deref(),
-        )
-        .await
+    run_ai_analysis(&context, options, &printer).await
+}
+
+/// Run AI analysis (summary, regressions, production readiness) and print results.
+///
+/// Each section is generated with a spinner and errors are handled gracefully,
+/// displaying an error message instead of failing the entire review.
+async fn run_ai_analysis(
+    context: &ReviewContext,
+    options: &ReviewOptions<'_>,
+    printer: &RichPrinter,
+) -> Result<()> {
+    let analyzer = AnalyzerConfig::new(
+        options.model_override,
+        options.config.default_model(),
+        options.config.openai_api_key().as_deref(),
+    )?;
+    let flattened_context = render_context(context);
+
+    // Generate summary with spinner
+    let summary_result = with_spinner("Generating summary...", || async {
+        analyzer.analyze_summary(&flattened_context).await
     })
     .await;
 
-    match ai_result {
-        Ok(result) => {
+    match summary_result {
+        Ok(summary) => {
             printer.newline();
-            print_ai_sections_rich(&printer, &result)?;
+            printer.print_ai_summary(&summary)?;
         }
         Err(err) => {
             printer.newline();
-            printer.print_error(&format!("AI analysis unavailable: {}", err));
+            printer.print_error(&format!("Summary unavailable: {}", err));
+        }
+    }
+
+    // Analyze regressions with spinner
+    let regressions_result = with_spinner("Analyzing regressions...", || async {
+        analyzer.analyze_regressions(&flattened_context).await
+    })
+    .await;
+
+    match regressions_result {
+        Ok(regressions) => {
+            printer.newline();
+            printer.print_regressions(&regressions)?;
+        }
+        Err(err) => {
+            printer.newline();
+            printer.print_error(&format!("Regressions analysis unavailable: {}", err));
+        }
+    }
+
+    // Check production readiness with spinner
+    let prod_result = with_spinner("Checking production readiness...", || async {
+        analyzer.analyze_prod_readiness(&flattened_context).await
+    })
+    .await;
+
+    match prod_result {
+        Ok(prod_readiness) => {
+            printer.newline();
+            printer.print_prod_readiness(&prod_readiness)?;
+        }
+        Err(err) => {
+            printer.newline();
+            printer.print_error(&format!("Production readiness check unavailable: {}", err));
         }
     }
 
@@ -437,22 +461,6 @@ fn build_commit_ai_context(
             })
             .collect(),
     }
-}
-
-/// Print AI review sections using RichPrinter.
-fn print_ai_sections_rich(printer: &RichPrinter, result: &AiReviewResult) -> Result<()> {
-    // Print AI summary panel
-    printer.print_ai_summary(&result.summary)?;
-    printer.newline();
-
-    // Print regressions table
-    printer.print_regressions(&result.regressions)?;
-    printer.newline();
-
-    // Print production readiness panel
-    printer.print_prod_readiness(&result.prod_readiness)?;
-
-    Ok(())
 }
 
 #[cfg(test)]
