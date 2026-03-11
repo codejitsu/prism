@@ -16,6 +16,15 @@ use richrs::text::Text;
 use crate::ai::{ProdReadinessReport, RegressionReport, Severity, Summary};
 use crate::github::types::{CommitFile, CommitResponse, PullRequest, PullRequestFile};
 
+/// Maximum terminal width for content rendering (capped for readability).
+///
+/// This limit applies to markdown and syntax-highlighted content to prevent
+/// extremely long lines on wide terminals. Separators use the full terminal width.
+const MAX_CONTENT_WIDTH: usize = 120;
+
+/// Minimum terminal width to prevent edge cases.
+const MIN_WIDTH: usize = 20;
+
 /// Maximum number of diff lines to show before truncating.
 const MAX_DIFF_LINES: usize = 500;
 
@@ -31,13 +40,22 @@ pub struct RichPrinter {
     width: usize,
 }
 
+/// Detect the current terminal width.
+///
+/// Returns the terminal width clamped to a minimum of `MIN_WIDTH`.
+/// Falls back to 80 if terminal size cannot be detected.
+fn detect_terminal_width() -> usize {
+    crossterm::terminal::size()
+        .map(|(w, _)| (w as usize).max(MIN_WIDTH))
+        .unwrap_or(80)
+}
+
 impl RichPrinter {
     /// Create a new RichPrinter with auto-detected terminal width.
+    ///
+    /// The width is capped at `MAX_CONTENT_WIDTH` for readable markdown/syntax rendering.
     pub fn new() -> Self {
-        let width = crossterm::terminal::size()
-            .map(|(w, _)| w as usize)
-            .unwrap_or(80);
-
+        let width = detect_terminal_width().min(MAX_CONTENT_WIDTH);
         Self { width }
     }
 
@@ -49,10 +67,9 @@ impl RichPrinter {
     /// Print a section separator (double line).
     ///
     /// Queries the current terminal width each time to support live resizing.
+    /// Uses full terminal width (not capped) for separators.
     pub fn print_separator(&self) {
-        let width = crossterm::terminal::size()
-            .map(|(w, _)| w as usize)
-            .unwrap_or(80);
+        let width = detect_terminal_width();
         println!("{}", "═".repeat(width));
     }
 
@@ -651,7 +668,16 @@ mod tests {
     #[test]
     fn test_rich_printer_new() {
         let printer = RichPrinter::new();
-        assert!(printer.width > 0);
+        // Width should be within valid bounds
+        assert!(printer.width >= MIN_WIDTH);
+        assert!(printer.width <= MAX_CONTENT_WIDTH);
+    }
+
+    #[test]
+    fn test_detect_terminal_width() {
+        let width = detect_terminal_width();
+        // Should always return at least MIN_WIDTH
+        assert!(width >= MIN_WIDTH);
     }
 
     #[test]
