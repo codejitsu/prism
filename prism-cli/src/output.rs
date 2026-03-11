@@ -393,7 +393,9 @@ impl RichPrinter {
             return Ok(());
         }
 
-        for (index, finding) in regressions.findings.iter().enumerate() {
+        let mut sorted_findings = regressions.findings.clone();
+        sorted_findings.sort_by(|a, b| b.severity.cmp(&a.severity));
+        for (index, finding) in sorted_findings.iter().enumerate() {
             let severity_style = match finding.severity {
                 Severity::High => Style::new()
                     .bold()
