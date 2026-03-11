@@ -456,7 +456,9 @@ fn print_ai_sections(result: &AiReviewResult) {
 
     println!();
     println!("=== Top 5 Potential Regressions ===");
-    for (index, finding) in result.regressions.findings.iter().enumerate() {
+    let mut sorted_findings = result.regressions.findings.clone();
+    sorted_findings.sort_by(|a, b| b.severity.cmp(&a.severity));
+    for (index, finding) in sorted_findings.iter().enumerate() {
         println!("{}. {} [{}]", index + 1, finding.title, finding.severity);
         println!("   Why: {}", finding.rationale);
         if !finding.affected_files.is_empty() {

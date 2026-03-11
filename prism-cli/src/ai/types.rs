@@ -1,3 +1,5 @@
+use std::fmt;
+
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -7,10 +9,28 @@ pub struct Summary {
     pub key_changes: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    Low,
+    Medium,
+    High,
+}
+
+impl fmt::Display for Severity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Severity::Low => write!(f, "low"),
+            Severity::Medium => write!(f, "medium"),
+            Severity::High => write!(f, "high"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct RegressionFinding {
     pub title: String,
-    pub severity: String,
+    pub severity: Severity,
     pub rationale: String,
     pub affected_files: Vec<String>,
     pub suggested_check: String,
