@@ -5,5 +5,5 @@ mod types;
 pub use analyzer::analyze_review_context;
 pub use types::{
     AiReviewResult, ProdReadinessReport, RegressionReport, ReviewContext, ReviewFileContext,
-    Summary,
+    Severity, Summary,
 };
