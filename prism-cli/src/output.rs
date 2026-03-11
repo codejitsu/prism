@@ -13,7 +13,7 @@ use richrs::style::Style;
 use richrs::syntax::Syntax;
 use richrs::text::Text;
 
-use crate::ai::{ProdReadinessReport, RegressionReport, Summary};
+use crate::ai::{ProdReadinessReport, RegressionReport, Severity, Summary};
 use crate::github::types::{CommitFile, CommitResponse, PullRequest, PullRequestFile};
 
 /// Maximum terminal width (capped for readability).
@@ -393,21 +393,22 @@ impl RichPrinter {
             return Ok(());
         }
 
-        for (index, finding) in regressions.findings.iter().enumerate() {
-            let severity_style = match finding.severity.to_uppercase().as_str() {
-                "HIGH" => Style::new()
+        let mut sorted_findings = regressions.findings.clone();
+        sorted_findings.sort_by(|a, b| b.severity.cmp(&a.severity));
+        for (index, finding) in sorted_findings.iter().enumerate() {
+            let severity_style = match finding.severity {
+                Severity::High => Style::new()
                     .bold()
                     .with_color(Color::Standard(StandardColor::Red)),
-                "MEDIUM" => Style::new().with_color(Color::Standard(StandardColor::Yellow)),
-                "LOW" => Style::new().with_color(Color::Standard(StandardColor::Green)),
-                _ => Style::new(),
+                Severity::Medium => Style::new().with_color(Color::Standard(StandardColor::Yellow)),
+                Severity::Low => Style::new().with_color(Color::Standard(StandardColor::Green)),
             };
 
             // Numbered item with severity
             println!(
                 "{}. [{}] {}",
                 index + 1,
-                Text::styled(&finding.severity, severity_style)
+                Text::styled(finding.severity.as_str(), severity_style)
                     .to_segments()
                     .to_ansi(),
                 Text::styled(&finding.title, Style::new().bold())
