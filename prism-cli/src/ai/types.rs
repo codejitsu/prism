@@ -12,8 +12,11 @@ pub struct Summary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
+    #[serde(alias = "Low", alias = "LOW")]
     Low,
+    #[serde(alias = "Medium", alias = "MEDIUM")]
     Medium,
+    #[serde(alias = "High", alias = "HIGH")]
     High,
 }
 
