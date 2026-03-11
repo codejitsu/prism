@@ -19,7 +19,7 @@ const CONFIG_TEMPLATE: &str = r#"# Prism configuration file
 # token = "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
 [openai]
-# OpenAI API key for AI-powered review (used with --ai flag).
+# OpenAI API key for AI-powered review.
 # Can also be set via the OPENAI_API_KEY environment variable.
 # api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 

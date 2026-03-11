@@ -31,16 +31,12 @@ enum Command {
         #[arg(long, short = 'p', conflicts_with = "commit")]
         pr: bool,
 
-        /// Enable AI-powered review sections
+        /// Override AI model
         #[arg(long)]
-        ai: bool,
-
-        /// Override AI model (used only with --ai)
-        #[arg(long, requires = "ai")]
         model: Option<String>,
 
         /// Print detailed PR/commit metadata and diffs alongside AI summary
-        #[arg(long, short = 'v', requires = "ai")]
+        #[arg(long, short = 'v')]
         verbose: bool,
     },
 
@@ -58,7 +54,6 @@ async fn main() {
             target,
             commit,
             pr,
-            ai,
             model,
             verbose,
         }) => {
@@ -70,8 +65,18 @@ async fn main() {
                 }
             };
 
+            // Check for OpenAI API key early
+            let has_api_key = cfg.openai_api_key().is_some()
+                || std::env::var("OPENAI_API_KEY").is_ok_and(|v| !v.trim().is_empty());
+            if !has_api_key {
+                log::error!(
+                    "OpenAI API key is required. \
+                     Set OPENAI_API_KEY environment variable or add it to ~/.config/prism/config.toml"
+                );
+                process::exit(1);
+            }
+
             let options = review::ReviewOptions {
-                enable_ai: ai,
                 model_override: model.as_deref(),
                 verbose,
                 config: &cfg,

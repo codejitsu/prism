@@ -30,7 +30,7 @@ pub async fn analyze_review_context(
         .filter(|key| !key.trim().is_empty())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "OpenAI API key is required when using --ai. \
+                "OpenAI API key is required. \
                  Set OPENAI_API_KEY environment variable or add it to ~/.config/prism/config.toml"
             )
         })?;
