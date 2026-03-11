@@ -8,88 +8,130 @@ use rig::completion::TypedPrompt;
 use rig::providers::openai;
 
 use super::prompts::{SYSTEM_PROMPT, prod_readiness_prompt, regressions_prompt, summary_prompt};
-use super::types::{AiReviewResult, ProdReadinessReport, RegressionReport, ReviewContext, Summary};
+use super::types::{ProdReadinessReport, RegressionReport, ReviewContext, Summary};
 
 const MAX_CONTEXT_CHARS: usize = 20_000;
 const MAX_FILE_PATCH_CHARS: usize = 2_500;
-const ANALYSIS_TIMEOUT_SECS: u64 = 45;
+const SECTION_TIMEOUT_SECS: u64 = 30;
 
-/// Run AI analysis on the given review context.
-///
-/// - `model_override`: CLI `--model` flag value (highest priority)
-/// - `config_model`: Model from config file (fallback)
-/// - `api_key`: OpenAI API key resolved from env or config
-pub async fn analyze_review_context(
-    context: &ReviewContext,
-    model_override: Option<&str>,
-    config_model: &str,
-    api_key: Option<&str>,
-) -> Result<AiReviewResult> {
-    // Ensure API key is available
-    let api_key = api_key
-        .filter(|key| !key.trim().is_empty())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "OpenAI API key is required. \
-                 Set OPENAI_API_KEY environment variable or add it to ~/.config/prism/config.toml"
-            )
-        })?;
+/// Configuration for AI analysis.
+pub struct AnalyzerConfig {
+    /// OpenAI API key.
+    api_key: String,
+    /// Model to use (e.g., "gpt-4o").
+    model: String,
+}
 
-    // Set env var for rig's from_env() to pick up
-    // SAFETY: We are setting this before spawning any threads that might read it,
-    // and we only set it once at the start of AI analysis.
-    unsafe {
-        env::set_var("OPENAI_API_KEY", api_key);
+impl AnalyzerConfig {
+    /// Create a new analyzer configuration.
+    ///
+    /// - `model_override`: CLI `--model` flag value (highest priority)
+    /// - `config_model`: Model from config file (fallback)
+    /// - `api_key`: OpenAI API key resolved from env or config
+    pub fn new(
+        model_override: Option<&str>,
+        config_model: &str,
+        api_key: Option<&str>,
+    ) -> Result<Self> {
+        let api_key = api_key
+            .filter(|key| !key.trim().is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "OpenAI API key is required. \
+                     Set OPENAI_API_KEY environment variable or add it to ~/.config/prism/config.toml"
+                )
+            })?;
+
+        let model = model_override
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(config_model)
+            .to_string();
+
+        Ok(Self {
+            api_key: api_key.to_string(),
+            model,
+        })
     }
 
-    let model = model_override
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(config_model);
+    /// Initialize the OpenAI environment and return the model name.
+    /// Call this once before making any analysis calls.
+    fn init_env(&self) {
+        // Set env var for rig's from_env() to pick up
+        // SAFETY: We are setting this before spawning any threads that might read it,
+        // and we only set it once at the start of AI analysis.
+        unsafe {
+            env::set_var("OPENAI_API_KEY", &self.api_key);
+        }
+    }
 
-    let openai_client = openai::Client::from_env();
-    let agent = openai_client
-        .agent(model)
-        .preamble(SYSTEM_PROMPT)
-        .max_tokens(2_000)
-        .build();
+    /// Analyze the summary section.
+    pub async fn analyze_summary(&self, context: &ReviewContext) -> Result<Summary> {
+        self.init_env();
+        let openai_client = openai::Client::from_env();
+        let agent = openai_client
+            .agent(&self.model)
+            .preamble(SYSTEM_PROMPT)
+            .max_tokens(2_000)
+            .build();
 
-    let flattened_context = render_context(context);
-    let (summary, regressions, prod_readiness) =
-        tokio::time::timeout(Duration::from_secs(ANALYSIS_TIMEOUT_SECS), async {
-            let summary: Summary = agent
+        let flattened_context = render_context(context);
+        tokio::time::timeout(Duration::from_secs(SECTION_TIMEOUT_SECS), async {
+            agent
                 .prompt_typed::<Summary>(summary_prompt(&flattened_context))
                 .await
-                .map_err(|err| anyhow::anyhow!("failed to generate AI summary section: {err}"))?;
+                .map_err(|err| anyhow::anyhow!("failed to generate AI summary section: {err}"))
+        })
+        .await
+        .context("Summary generation timed out")?
+    }
 
-            let regressions: RegressionReport = agent
+    /// Analyze for potential regressions.
+    pub async fn analyze_regressions(&self, context: &ReviewContext) -> Result<RegressionReport> {
+        self.init_env();
+        let openai_client = openai::Client::from_env();
+        let agent = openai_client
+            .agent(&self.model)
+            .preamble(SYSTEM_PROMPT)
+            .max_tokens(2_000)
+            .build();
+
+        let flattened_context = render_context(context);
+        tokio::time::timeout(Duration::from_secs(SECTION_TIMEOUT_SECS), async {
+            agent
                 .prompt_typed::<RegressionReport>(regressions_prompt(&flattened_context))
                 .await
-                .map_err(|err| {
-                    anyhow::anyhow!("failed to generate AI regressions section: {err}")
-                })?;
+                .map_err(|err| anyhow::anyhow!("failed to generate AI regressions section: {err}"))
+        })
+        .await
+        .context("Regressions analysis timed out")?
+    }
 
-            let prod_readiness: ProdReadinessReport = agent
+    /// Analyze production readiness.
+    pub async fn analyze_prod_readiness(
+        &self,
+        context: &ReviewContext,
+    ) -> Result<ProdReadinessReport> {
+        self.init_env();
+        let openai_client = openai::Client::from_env();
+        let agent = openai_client
+            .agent(&self.model)
+            .preamble(SYSTEM_PROMPT)
+            .max_tokens(2_000)
+            .build();
+
+        let flattened_context = render_context(context);
+        tokio::time::timeout(Duration::from_secs(SECTION_TIMEOUT_SECS), async {
+            agent
                 .prompt_typed::<ProdReadinessReport>(prod_readiness_prompt(&flattened_context))
                 .await
                 .map_err(|err| {
                     anyhow::anyhow!("failed to generate AI production readiness section: {err}")
-                })?;
-
-            Ok::<(Summary, RegressionReport, ProdReadinessReport), anyhow::Error>((
-                summary,
-                regressions,
-                prod_readiness,
-            ))
+                })
         })
         .await
-        .context("AI analysis timed out")??;
-
-    Ok(AiReviewResult {
-        summary,
-        regressions,
-        prod_readiness,
-    })
+        .context("Production readiness analysis timed out")?
+    }
 }
 
 fn render_context(context: &ReviewContext) -> String {

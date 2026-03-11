@@ -79,10 +79,3 @@ pub struct ReviewContext {
     pub body: Option<String>,
     pub files: Vec<ReviewFileContext>,
 }
-
-#[derive(Debug)]
-pub struct AiReviewResult {
-    pub summary: Summary,
-    pub regressions: RegressionReport,
-    pub prod_readiness: ProdReadinessReport,
-}
