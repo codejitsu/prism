@@ -9,8 +9,6 @@ use crate::output::{FileStats, RichPrinter, with_spinner};
 
 /// Options controlling review output and AI analysis.
 pub struct ReviewOptions<'a> {
-    /// Whether to run AI-powered analysis.
-    pub enable_ai: bool,
     /// Override model for AI analysis (CLI `--model` flag).
     pub model_override: Option<&'a str>,
     /// Whether to print detailed PR/commit metadata and diffs.
@@ -266,37 +264,35 @@ async fn review_pull_request(
         }
     }
 
-    if options.enable_ai {
-        let context = build_pr_ai_context(
-            owner,
-            repo,
-            &pr.title,
-            pr.body.as_deref(),
-            &files,
-            pr_number,
-        );
+    let context = build_pr_ai_context(
+        owner,
+        repo,
+        &pr.title,
+        pr.body.as_deref(),
+        &files,
+        pr_number,
+    );
 
-        // Run AI analysis with spinner
-        let ai_result = with_spinner("Running AI analysis...", || async {
-            analyze_review_context(
-                &context,
-                options.model_override,
-                options.config.default_model(),
-                options.config.openai_api_key().as_deref(),
-            )
-            .await
-        })
-        .await;
+    // Run AI analysis with spinner
+    let ai_result = with_spinner("Running AI analysis...", || async {
+        analyze_review_context(
+            &context,
+            options.model_override,
+            options.config.default_model(),
+            options.config.openai_api_key().as_deref(),
+        )
+        .await
+    })
+    .await;
 
-        match ai_result {
-            Ok(result) => {
-                printer.newline();
-                print_ai_sections_rich(&printer, &result)?;
-            }
-            Err(err) => {
-                printer.newline();
-                printer.print_error(&format!("AI analysis unavailable: {}", err));
-            }
+    match ai_result {
+        Ok(result) => {
+            printer.newline();
+            print_ai_sections_rich(&printer, &result)?;
+        }
+        Err(err) => {
+            printer.newline();
+            printer.print_error(&format!("AI analysis unavailable: {}", err));
         }
     }
 
@@ -356,36 +352,34 @@ async fn review_commit(
         }
     }
 
-    if options.enable_ai {
-        let context = build_commit_ai_context(
-            owner,
-            repo,
-            &commit.commit.message,
-            &commit.files,
-            &commit.sha,
-        );
+    let context = build_commit_ai_context(
+        owner,
+        repo,
+        &commit.commit.message,
+        &commit.files,
+        &commit.sha,
+    );
 
-        // Run AI analysis with spinner
-        let ai_result = with_spinner("Running AI analysis...", || async {
-            analyze_review_context(
-                &context,
-                options.model_override,
-                options.config.default_model(),
-                options.config.openai_api_key().as_deref(),
-            )
-            .await
-        })
-        .await;
+    // Run AI analysis with spinner
+    let ai_result = with_spinner("Running AI analysis...", || async {
+        analyze_review_context(
+            &context,
+            options.model_override,
+            options.config.default_model(),
+            options.config.openai_api_key().as_deref(),
+        )
+        .await
+    })
+    .await;
 
-        match ai_result {
-            Ok(result) => {
-                printer.newline();
-                print_ai_sections_rich(&printer, &result)?;
-            }
-            Err(err) => {
-                printer.newline();
-                printer.print_error(&format!("AI analysis unavailable: {}", err));
-            }
+    match ai_result {
+        Ok(result) => {
+            printer.newline();
+            print_ai_sections_rich(&printer, &result)?;
+        }
+        Err(err) => {
+            printer.newline();
+            printer.print_error(&format!("AI analysis unavailable: {}", err));
         }
     }
 
