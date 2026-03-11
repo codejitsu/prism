@@ -273,66 +273,7 @@ async fn review_pull_request(
         pr_number,
     );
 
-    // Build analyzer config and render context once
-    let analyzer = AnalyzerConfig::new(
-        options.model_override,
-        options.config.default_model(),
-        options.config.openai_api_key().as_deref(),
-    )?;
-    let flattened_context = render_context(&context);
-
-    // Generate summary with spinner
-    let summary_result = with_spinner("Generating summary...", || async {
-        analyzer.analyze_summary(&flattened_context).await
-    })
-    .await;
-
-    match summary_result {
-        Ok(summary) => {
-            printer.newline();
-            printer.print_ai_summary(&summary)?;
-        }
-        Err(err) => {
-            printer.newline();
-            printer.print_error(&format!("Summary unavailable: {}", err));
-        }
-    }
-
-    // Analyze regressions with spinner
-    let regressions_result = with_spinner("Analyzing regressions...", || async {
-        analyzer.analyze_regressions(&flattened_context).await
-    })
-    .await;
-
-    match regressions_result {
-        Ok(regressions) => {
-            printer.newline();
-            printer.print_regressions(&regressions)?;
-        }
-        Err(err) => {
-            printer.newline();
-            printer.print_error(&format!("Regressions analysis unavailable: {}", err));
-        }
-    }
-
-    // Check production readiness with spinner
-    let prod_result = with_spinner("Checking production readiness...", || async {
-        analyzer.analyze_prod_readiness(&flattened_context).await
-    })
-    .await;
-
-    match prod_result {
-        Ok(prod_readiness) => {
-            printer.newline();
-            printer.print_prod_readiness(&prod_readiness)?;
-        }
-        Err(err) => {
-            printer.newline();
-            printer.print_error(&format!("Production readiness check unavailable: {}", err));
-        }
-    }
-
-    Ok(())
+    run_ai_analysis(&context, options, &printer).await
 }
 
 /// Fetch and display a commit review.
@@ -396,13 +337,24 @@ async fn review_commit(
         &commit.sha,
     );
 
-    // Build analyzer config and render context once
+    run_ai_analysis(&context, options, &printer).await
+}
+
+/// Run AI analysis (summary, regressions, production readiness) and print results.
+///
+/// Each section is generated with a spinner and errors are handled gracefully,
+/// displaying an error message instead of failing the entire review.
+async fn run_ai_analysis(
+    context: &ReviewContext,
+    options: &ReviewOptions<'_>,
+    printer: &RichPrinter,
+) -> Result<()> {
     let analyzer = AnalyzerConfig::new(
         options.model_override,
         options.config.default_model(),
         options.config.openai_api_key().as_deref(),
     )?;
-    let flattened_context = render_context(&context);
+    let flattened_context = render_context(context);
 
     // Generate summary with spinner
     let summary_result = with_spinner("Generating summary...", || async {
