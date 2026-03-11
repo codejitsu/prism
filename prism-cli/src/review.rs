@@ -5,6 +5,19 @@ use crate::config::Config;
 use crate::github::client::GitHubClient;
 use crate::github::repo;
 use crate::github::types::{CommitFile, PullRequestFile};
+use crate::output::{FileStats, RichPrinter, with_spinner};
+
+/// Options controlling review output and AI analysis.
+pub struct ReviewOptions<'a> {
+    /// Whether to run AI-powered analysis.
+    pub enable_ai: bool,
+    /// Override model for AI analysis (CLI `--model` flag).
+    pub model_override: Option<&'a str>,
+    /// Whether to print detailed PR/commit metadata and diffs.
+    pub verbose: bool,
+    /// Application configuration (tokens, default model, etc.).
+    pub config: &'a Config,
+}
 
 /// The parsed target of a `prism review` invocation.
 #[derive(Debug, Clone, PartialEq)]
@@ -170,13 +183,11 @@ pub async fn review(
     target: &str,
     force_commit: bool,
     force_pr: bool,
-    enable_ai: bool,
-    model_override: Option<&str>,
-    config: &Config,
+    options: ReviewOptions<'_>,
 ) -> Result<()> {
     let review_target = ReviewTarget::parse(target, force_commit, force_pr)?;
 
-    let github_token = config.github_token().ok_or_else(|| {
+    let github_token = options.config.github_token().ok_or_else(|| {
         anyhow::anyhow!(
             "GitHub token is required. Set GITHUB_TOKEN environment variable or add it to ~/.config/prism/config.toml"
         )
@@ -191,9 +202,7 @@ pub async fn review(
                 &repo_info.owner,
                 &repo_info.repo,
                 pr_number,
-                enable_ai,
-                model_override,
-                config,
+                &options,
             )
             .await
         }
@@ -201,30 +210,10 @@ pub async fn review(
             owner,
             repo,
             pr_number,
-        } => {
-            review_pull_request(
-                &client,
-                &owner,
-                &repo,
-                pr_number,
-                enable_ai,
-                model_override,
-                config,
-            )
-            .await
-        }
+        } => review_pull_request(&client, &owner, &repo, pr_number, &options).await,
         ReviewTarget::Commit { hash } => {
             let repo_info = repo::detect_repo()?;
-            review_commit(
-                &client,
-                &repo_info.owner,
-                &repo_info.repo,
-                &hash,
-                enable_ai,
-                model_override,
-                config,
-            )
-            .await
+            review_commit(&client, &repo_info.owner, &repo_info.repo, &hash, &options).await
         }
     }
 }
@@ -235,55 +224,49 @@ async fn review_pull_request(
     owner: &str,
     repo: &str,
     pr_number: u64,
-    enable_ai: bool,
-    model_override: Option<&str>,
-    config: &Config,
+    options: &ReviewOptions<'_>,
 ) -> Result<()> {
-    log::info!("Fetching PR #{} from {}/{}...", pr_number, owner, repo);
+    let printer = RichPrinter::new();
 
-    let pr = client.fetch_pull_request(owner, repo, pr_number).await?;
-    let files = client
-        .fetch_pull_request_files(owner, repo, pr_number)
-        .await?;
+    // Fetch PR data with spinner
+    let fetch_msg = format!("Fetching PR #{} from {}/{}...", pr_number, owner, repo);
+    let (pr, files) = with_spinner(&fetch_msg, || async {
+        let pr = client.fetch_pull_request(owner, repo, pr_number).await?;
+        let files = client
+            .fetch_pull_request_files(owner, repo, pr_number)
+            .await?;
+        Ok((pr, files))
+    })
+    .await?;
 
-    println!();
-    println!("PR #{}: {}", pr.number, pr.title);
-    println!("Author: {}", pr.user.login);
-    println!("State:  {}", pr.state);
-    println!("Base:   {} <- {}", pr.base.ref_name, pr.head.ref_name);
+    printer.newline();
 
-    if let Some(body) = &pr.body {
-        let body = body.trim();
-        if !body.is_empty() {
-            println!();
-            println!("Description:");
-            for line in body.lines() {
-                println!("  {}", line);
-            }
+    if options.verbose {
+        // Print PR header
+        printer.print_pr_header(&pr)?;
+        printer.newline();
+
+        // Print description if present
+        if let Some(body) = &pr.body {
+            printer.print_description(body)?;
+        }
+
+        // Print files table
+        let stats = FileStats {
+            total_files: pr.changed_files as usize,
+            additions: pr.additions,
+            deletions: pr.deletions,
+        };
+        printer.print_files_table_pr(&files, stats)?;
+        printer.newline();
+
+        // Print diffs
+        if files.iter().any(|f| f.patch.is_some()) {
+            printer.print_diff_pr(&files)?;
         }
     }
 
-    println!();
-    println!(
-        "Files changed ({}): +{} -{}",
-        pr.changed_files, pr.additions, pr.deletions
-    );
-
-    print_file_list_pr(&files);
-
-    if files.iter().any(|f| f.patch.is_some()) {
-        println!();
-        println!("--- Diff ---");
-        for file in &files {
-            if let Some(patch) = &file.patch {
-                println!();
-                println!("diff --git a/{} b/{}", file.filename, file.filename);
-                println!("{}", patch);
-            }
-        }
-    }
-
-    if enable_ai {
+    if options.enable_ai {
         let context = build_pr_ai_context(
             owner,
             repo,
@@ -292,18 +275,27 @@ async fn review_pull_request(
             &files,
             pr_number,
         );
-        match analyze_review_context(
-            &context,
-            model_override,
-            config.default_model(),
-            config.openai_api_key().as_deref(),
-        )
-        .await
-        {
-            Ok(result) => print_ai_sections(&result),
+
+        // Run AI analysis with spinner
+        let ai_result = with_spinner("Running AI analysis...", || async {
+            analyze_review_context(
+                &context,
+                options.model_override,
+                options.config.default_model(),
+                options.config.openai_api_key().as_deref(),
+            )
+            .await
+        })
+        .await;
+
+        match ai_result {
+            Ok(result) => {
+                printer.newline();
+                print_ai_sections_rich(&printer, &result)?;
+            }
             Err(err) => {
-                println!();
-                println!("AI analysis unavailable: {}", err);
+                printer.newline();
+                printer.print_error(&format!("AI analysis unavailable: {}", err));
             }
         }
     }
@@ -317,56 +309,54 @@ async fn review_commit(
     owner: &str,
     repo: &str,
     sha: &str,
-    enable_ai: bool,
-    model_override: Option<&str>,
-    config: &Config,
+    options: &ReviewOptions<'_>,
 ) -> Result<()> {
-    log::info!("Fetching commit {} from {}/{}...", sha, owner, repo);
+    let printer = RichPrinter::new();
 
-    let commit = client.fetch_commit(owner, repo, sha).await?;
+    // Fetch commit data with spinner
+    let fetch_msg = format!("Fetching commit {} from {}/{}...", sha, owner, repo);
+    let commit = with_spinner(&fetch_msg, || async {
+        client.fetch_commit(owner, repo, sha).await
+    })
+    .await?;
 
-    let total_additions: u64 = commit.files.iter().map(|f| f.additions).sum();
-    let total_deletions: u64 = commit.files.iter().map(|f| f.deletions).sum();
+    printer.newline();
 
-    println!();
-    println!("Commit: {}", commit.sha);
-    println!("Author: {}", commit.commit.author.name);
-    if let Some(date) = &commit.commit.author.date {
-        println!("Date:   {}", date);
-    }
+    if options.verbose {
+        // Print commit header
+        printer.print_commit_header(&commit)?;
+        printer.newline();
 
-    let message = commit.commit.message.trim();
-    if !message.is_empty() {
-        println!();
-        println!("Message:");
-        for line in message.lines() {
-            println!("  {}", line);
+        // Print description (full message minus first line)
+        let message_rest: String = commit
+            .commit
+            .message
+            .lines()
+            .skip(1)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !message_rest.trim().is_empty() {
+            printer.print_description(&message_rest)?;
+        }
+
+        // Print files table
+        let total_additions: u64 = commit.files.iter().map(|f| f.additions).sum();
+        let total_deletions: u64 = commit.files.iter().map(|f| f.deletions).sum();
+        let stats = FileStats {
+            total_files: commit.files.len(),
+            additions: total_additions,
+            deletions: total_deletions,
+        };
+        printer.print_files_table_commit(&commit.files, stats)?;
+        printer.newline();
+
+        // Print diffs
+        if commit.files.iter().any(|f| f.patch.is_some()) {
+            printer.print_diff_commit(&commit.files)?;
         }
     }
 
-    println!();
-    println!(
-        "Files changed ({}): +{} -{}",
-        commit.files.len(),
-        total_additions,
-        total_deletions
-    );
-
-    print_file_list_commit(&commit.files);
-
-    if commit.files.iter().any(|f| f.patch.is_some()) {
-        println!();
-        println!("--- Diff ---");
-        for file in &commit.files {
-            if let Some(patch) = &file.patch {
-                println!();
-                println!("diff --git a/{} b/{}", file.filename, file.filename);
-                println!("{}", patch);
-            }
-        }
-    }
-
-    if enable_ai {
+    if options.enable_ai {
         let context = build_commit_ai_context(
             owner,
             repo,
@@ -374,18 +364,27 @@ async fn review_commit(
             &commit.files,
             &commit.sha,
         );
-        match analyze_review_context(
-            &context,
-            model_override,
-            config.default_model(),
-            config.openai_api_key().as_deref(),
-        )
-        .await
-        {
-            Ok(result) => print_ai_sections(&result),
+
+        // Run AI analysis with spinner
+        let ai_result = with_spinner("Running AI analysis...", || async {
+            analyze_review_context(
+                &context,
+                options.model_override,
+                options.config.default_model(),
+                options.config.openai_api_key().as_deref(),
+            )
+            .await
+        })
+        .await;
+
+        match ai_result {
+            Ok(result) => {
+                printer.newline();
+                print_ai_sections_rich(&printer, &result)?;
+            }
             Err(err) => {
-                println!();
-                println!("AI analysis unavailable: {}", err);
+                printer.newline();
+                printer.print_error(&format!("AI analysis unavailable: {}", err));
             }
         }
     }
@@ -446,85 +445,20 @@ fn build_commit_ai_context(
     }
 }
 
-fn print_ai_sections(result: &AiReviewResult) {
-    println!();
-    println!("=== AI Summary ===");
-    println!("{}", result.summary.overview);
-    for item in &result.summary.key_changes {
-        println!("- {}", item);
-    }
+/// Print AI review sections using RichPrinter.
+fn print_ai_sections_rich(printer: &RichPrinter, result: &AiReviewResult) -> Result<()> {
+    // Print AI summary panel
+    printer.print_ai_summary(&result.summary)?;
+    printer.newline();
 
-    println!();
-    println!("=== Top 5 Potential Regressions ===");
-    let mut sorted_findings = result.regressions.findings.clone();
-    sorted_findings.sort_by(|a, b| b.severity.cmp(&a.severity));
-    for (index, finding) in sorted_findings.iter().enumerate() {
-        println!("{}. {} [{}]", index + 1, finding.title, finding.severity);
-        println!("   Why: {}", finding.rationale);
-        if !finding.affected_files.is_empty() {
-            println!("   Files: {}", finding.affected_files.join(", "));
-        }
-        println!("   Check: {}", finding.suggested_check);
-    }
+    // Print regressions table
+    printer.print_regressions(&result.regressions)?;
+    printer.newline();
 
-    println!();
-    println!("=== Production Readiness ===");
-    println!(
-        "Verdict: {} (score: {})",
-        result.prod_readiness.verdict, result.prod_readiness.readiness_score
-    );
-    print_labeled_list(
-        "Logging/Observability",
-        &result.prod_readiness.logging_and_observability,
-    );
-    print_labeled_list("Scalability", &result.prod_readiness.scalability);
-    print_labeled_list("Edge Cases", &result.prod_readiness.edge_cases);
-    print_labeled_list("Blocking Issues", &result.prod_readiness.blocking_issues);
-}
+    // Print production readiness panel
+    printer.print_prod_readiness(&result.prod_readiness)?;
 
-fn print_labeled_list(label: &str, values: &[String]) {
-    if values.is_empty() {
-        return;
-    }
-
-    println!("{}:", label);
-    for value in values {
-        println!("- {}", value);
-    }
-}
-
-/// Print the file summary list for PR files.
-fn print_file_list_pr(files: &[PullRequestFile]) {
-    for file in files {
-        let status_char = status_to_char(&file.status);
-        println!(
-            "  {} {:<40} (+{} -{})",
-            status_char, file.filename, file.additions, file.deletions
-        );
-    }
-}
-
-/// Print the file summary list for commit files.
-fn print_file_list_commit(files: &[CommitFile]) {
-    for file in files {
-        let status_char = status_to_char(&file.status);
-        println!(
-            "  {} {:<40} (+{} -{})",
-            status_char, file.filename, file.additions, file.deletions
-        );
-    }
-}
-
-/// Map GitHub file status strings to single-character indicators.
-fn status_to_char(status: &str) -> char {
-    match status {
-        "added" => 'A',
-        "removed" => 'D',
-        "modified" => 'M',
-        "renamed" => 'R',
-        "copied" => 'C',
-        _ => '?',
-    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -812,21 +746,5 @@ mod tests {
             "Expected error about PR numbers, got: {}",
             err
         );
-    }
-
-    // --- status_to_char tests ---
-
-    #[test]
-    fn test_status_to_char_known() {
-        assert_eq!(status_to_char("added"), 'A');
-        assert_eq!(status_to_char("removed"), 'D');
-        assert_eq!(status_to_char("modified"), 'M');
-        assert_eq!(status_to_char("renamed"), 'R');
-        assert_eq!(status_to_char("copied"), 'C');
-    }
-
-    #[test]
-    fn test_status_to_char_unknown() {
-        assert_eq!(status_to_char("something_else"), '?');
     }
 }

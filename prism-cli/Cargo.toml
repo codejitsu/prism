@@ -19,3 +19,5 @@ schemars = "1"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 toml = "0.8"
+richrs = { version = "0.2", features = ["syntax", "markdown"] }
+crossterm = "0.28"
