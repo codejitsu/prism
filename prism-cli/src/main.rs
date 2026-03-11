@@ -66,9 +66,7 @@ async fn main() {
             };
 
             // Check for OpenAI API key early
-            let has_api_key = cfg.openai_api_key().is_some()
-                || std::env::var("OPENAI_API_KEY").is_ok_and(|v| !v.trim().is_empty());
-            if !has_api_key {
+            if cfg.openai_api_key().is_none() {
                 log::error!(
                     "OpenAI API key is required. \
                      Set OPENAI_API_KEY environment variable or add it to ~/.config/prism/config.toml"
