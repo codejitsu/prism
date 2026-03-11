@@ -408,7 +408,7 @@ impl RichPrinter {
             println!(
                 "{}. [{}] {}",
                 index + 1,
-                Text::styled(finding.severity.to_string(), severity_style)
+                Text::styled(finding.severity.as_str(), severity_style)
                     .to_segments()
                     .to_ansi(),
                 Text::styled(&finding.title, Style::new().bold())

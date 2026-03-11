@@ -20,13 +20,20 @@ pub enum Severity {
     High,
 }
 
+impl Severity {
+    /// Returns the severity as a static string slice, avoiding allocation.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Severity::Low => "low",
+            Severity::Medium => "medium",
+            Severity::High => "high",
+        }
+    }
+}
+
 impl fmt::Display for Severity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Severity::Low => write!(f, "low"),
-            Severity::Medium => write!(f, "medium"),
-            Severity::High => write!(f, "high"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
