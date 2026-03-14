@@ -16,8 +16,14 @@ use richrs::text::Text;
 use crate::ai::{ProdReadinessReport, RegressionReport, Severity, Summary};
 use crate::github::types::{CommitFile, CommitResponse, PullRequest, PullRequestFile};
 
-/// Maximum terminal width (capped for readability).
-const MAX_WIDTH: usize = 120;
+/// Maximum terminal width for content rendering (capped for readability).
+///
+/// This limit applies to markdown and syntax-highlighted content to prevent
+/// extremely long lines on wide terminals. Separators use the full terminal width.
+const MAX_CONTENT_WIDTH: usize = 120;
+
+/// Minimum terminal width to prevent edge cases.
+const MIN_WIDTH: usize = 20;
 
 /// Maximum number of diff lines to show before truncating.
 const MAX_DIFF_LINES: usize = 500;
@@ -34,14 +40,22 @@ pub struct RichPrinter {
     width: usize,
 }
 
+/// Detect the current terminal width.
+///
+/// Returns the terminal width clamped to a minimum of `MIN_WIDTH`.
+/// Falls back to 80 if terminal size cannot be detected.
+fn detect_terminal_width() -> usize {
+    crossterm::terminal::size()
+        .map(|(w, _)| (w as usize).max(MIN_WIDTH))
+        .unwrap_or(80)
+}
+
 impl RichPrinter {
     /// Create a new RichPrinter with auto-detected terminal width.
+    ///
+    /// The width is capped at `MAX_CONTENT_WIDTH` for readable markdown/syntax rendering.
     pub fn new() -> Self {
-        let term_width = crossterm::terminal::size()
-            .map(|(w, _)| w as usize)
-            .unwrap_or(80);
-        let width = term_width.min(MAX_WIDTH);
-
+        let width = detect_terminal_width().min(MAX_CONTENT_WIDTH);
         Self { width }
     }
 
@@ -50,22 +64,28 @@ impl RichPrinter {
         println!();
     }
 
-    /// Print a section separator (double line).
-    pub fn print_separator(&self) {
-        println!("{}", "═".repeat(self.width));
+    /// Print a section header with an underline using double-line characters.
+    ///
+    /// Example:
+    ///
+    /// AI Summary
+    /// ══════════
+    pub fn print_header(&self, caption: &str) {
+        println!(
+            "{}",
+            Text::styled(caption, Style::new().bold())
+                .to_segments()
+                .to_ansi()
+        );
+        println!("{}", "═".repeat(caption.len()));
+        println!();
     }
 
     /// Print a pull request header.
     pub fn print_pr_header(&self, pr: &PullRequest) -> Result<()> {
-        // Title with emoji
+        // Title with emoji (underlined)
         let title = format!("PR #{}: {}", pr.number, pr.title);
-        println!(
-            "{}",
-            Text::styled(format!("🚀 {}", title), Style::new().bold())
-                .to_segments()
-                .to_ansi()
-        );
-        println!();
+        self.print_header(&format!("🚀 {}", title));
 
         // Author in cyan
         println!(
@@ -93,7 +113,7 @@ impl RichPrinter {
         // Base/head branches
         println!("Base:   {} <- {}", pr.base.ref_name, pr.head.ref_name);
 
-        self.print_separator();
+        // separator replaced by header underline above
         Ok(())
     }
 
@@ -108,14 +128,8 @@ impl RichPrinter {
             .unwrap_or("(no message)");
         let short_sha = &commit.sha[..7.min(commit.sha.len())];
 
-        // Title with emoji
-        println!(
-            "{}",
-            Text::styled(format!("🚀 Commit {}", short_sha), Style::new().bold())
-                .to_segments()
-                .to_ansi()
-        );
-        println!();
+        // Title with emoji (underlined)
+        self.print_header(&format!("🚀 Commit {}", short_sha));
 
         // Message first line in bold
         println!(
@@ -141,7 +155,7 @@ impl RichPrinter {
             println!("Date:   {}", date);
         }
 
-        self.print_separator();
+        // separator replaced by header underline above
         Ok(())
     }
 
@@ -152,38 +166,24 @@ impl RichPrinter {
             return Ok(());
         }
 
-        // Bold header with emoji
-        println!(
-            "{}",
-            Text::styled("Description", Style::new().bold())
-                .to_segments()
-                .to_ansi()
-        );
+        // Header (underlined)
+        self.print_header("Description");
 
         // Render markdown
         let md = richrs::markdown::Markdown::new(body);
         let segments = md.render(self.width);
         print!("{}", segments.to_ansi());
-
-        self.print_separator();
         Ok(())
     }
 
     /// Print a files changed list for PR files.
     pub fn print_files_table_pr(&self, files: &[PullRequestFile], stats: FileStats) -> Result<()> {
         // Bold header with emoji
-        println!(
-            "{}",
-            Text::styled(
-                format!(
-                    "Files Changed ({}) +{} -{}",
-                    stats.total_files, stats.additions, stats.deletions
-                ),
-                Style::new().bold()
-            )
-            .to_segments()
-            .to_ansi()
+        let header = format!(
+            "Files Changed ({}) +{} -{}",
+            stats.total_files, stats.additions, stats.deletions
         );
+        self.print_header(&header);
 
         for file in files {
             let (status_char, status_style) = status_to_styled_char(&file.status);
@@ -210,18 +210,11 @@ impl RichPrinter {
     /// Print a files changed list for commit files.
     pub fn print_files_table_commit(&self, files: &[CommitFile], stats: FileStats) -> Result<()> {
         // Bold header with emoji
-        println!(
-            "{}",
-            Text::styled(
-                format!(
-                    "Files Changed ({}) +{} -{}",
-                    stats.total_files, stats.additions, stats.deletions
-                ),
-                Style::new().bold()
-            )
-            .to_segments()
-            .to_ansi()
+        let header = format!(
+            "Files Changed ({}) +{} -{}",
+            stats.total_files, stats.additions, stats.deletions
         );
+        self.print_header(&header);
 
         for file in files {
             let (status_char, status_style) = status_to_styled_char(&file.status);
@@ -329,19 +322,14 @@ impl RichPrinter {
             );
         }
 
-        self.print_separator();
+        // removed trailing separator; headers are underlined at caption
         Ok(())
     }
 
     /// Print AI summary.
     pub fn print_ai_summary(&self, summary: &Summary) -> Result<()> {
-        // Bold header with emoji
-        println!(
-            "{}",
-            Text::styled("AI Summary", Style::new().bold())
-                .to_segments()
-                .to_ansi()
-        );
+        // Header (underlined)
+        self.print_header("AI Summary");
 
         // Overview
         println!("{}", summary.overview);
@@ -365,19 +353,14 @@ impl RichPrinter {
             }
         }
 
-        self.print_separator();
+        // removed trailing separator; header underline added above
         Ok(())
     }
 
     /// Print regressions as a list.
     pub fn print_regressions(&self, regressions: &RegressionReport) -> Result<()> {
-        // Bold header with emoji
-        println!(
-            "{}",
-            Text::styled("Potential Regressions", Style::new().bold())
-                .to_segments()
-                .to_ansi()
-        );
+        // Header (underlined)
+        self.print_header("Potential Regressions");
 
         if regressions.findings.is_empty() {
             println!(
@@ -389,7 +372,6 @@ impl RichPrinter {
                 .to_segments()
                 .to_ansi()
             );
-            self.print_separator();
             return Ok(());
         }
 
@@ -454,19 +436,14 @@ impl RichPrinter {
             }
         }
 
-        self.print_separator();
+        // removed trailing separator; header underline used above
         Ok(())
     }
 
     /// Print production readiness.
     pub fn print_prod_readiness(&self, readiness: &ProdReadinessReport) -> Result<()> {
-        // Bold header with emoji
-        println!(
-            "{}",
-            Text::styled("Production Readiness", Style::new().bold())
-                .to_segments()
-                .to_ansi()
-        );
+        // Header (underlined)
+        self.print_header("Production Readiness");
 
         // Verdict with color based on score
         let score_style = if readiness.readiness_score >= 80 {
@@ -502,7 +479,7 @@ impl RichPrinter {
         print_section("Edge Cases", &readiness.edge_cases);
         print_section("Blocking Issues", &readiness.blocking_issues);
 
-        self.print_separator();
+        // removed trailing separator; header underline used above
         Ok(())
     }
 
@@ -650,8 +627,16 @@ mod tests {
     #[test]
     fn test_rich_printer_new() {
         let printer = RichPrinter::new();
-        assert!(printer.width <= MAX_WIDTH);
-        assert!(printer.width > 0);
+        // Width should be within valid bounds
+        assert!(printer.width >= MIN_WIDTH);
+        assert!(printer.width <= MAX_CONTENT_WIDTH);
+    }
+
+    #[test]
+    fn test_detect_terminal_width() {
+        let width = detect_terminal_width();
+        // Should always return at least MIN_WIDTH
+        assert!(width >= MIN_WIDTH);
     }
 
     #[test]

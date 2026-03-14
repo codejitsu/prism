@@ -374,6 +374,8 @@ async fn run_ai_analysis(
     }
 
     // Analyze regressions with spinner
+    // Visual separation: add a blank line before spinner output
+    printer.newline();
     let regressions_result = with_spinner("Analyzing regressions...", || async {
         analyzer.analyze_regressions(&flattened_context).await
     })
@@ -391,6 +393,8 @@ async fn run_ai_analysis(
     }
 
     // Check production readiness with spinner
+    // Visual separation: add a blank line before spinner output
+    printer.newline();
     let prod_result = with_spinner("Checking production readiness...", || async {
         analyzer.analyze_prod_readiness(&flattened_context).await
     })
