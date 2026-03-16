@@ -3,7 +3,7 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// Default AI model when none is specified.
@@ -11,7 +11,7 @@ const DEFAULT_MODEL: &str = "gpt-4o";
 
 /// Template written by `prism init`.
 const CONFIG_TEMPLATE: &str = r#"# Prism configuration file
-# See: https://github.com/anomalyco/prism
+# See: https://github.com/codejitsu/prism
 
 [github]
 # GitHub personal access token (PAT) for API authentication.
